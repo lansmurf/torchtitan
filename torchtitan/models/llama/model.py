@@ -15,7 +15,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from torchtitan.models.norms import build_norm
-
+from torch.nn.attention.flex_attention import flex_attention, BlockMask
 
 @dataclass
 class ModelArgs:
@@ -126,6 +126,87 @@ def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
     )
 
 
+class DifferentialAttention(nn.Module):
+
+    def __init__(self, model_args: ModelArgs):
+        super().__init__()
+        self.num_heads = model_args.num_heads
+        self.num_kv_heads = model_args.num_kv_heads if model_args.num_kv_heads is not None else model_args.num_heads
+        self.num_rep = self.num_heads // self.num_kv_heads
+        self.head_dim = model_args.dim // model_args.num_heads
+        
+        self.wq = nn.Linear(model_args.dim, model_args.num_heads * self.head_dim, bias=False)
+        self.wk = nn.Linear(model_args.dim, self.num_kv_heads * self.head_dim, bias=False)
+        self.wv = nn.Linear(model_args.dim, self.num_kv_heads * self.head_dim, bias=False)
+        self.wo = nn.Linear(model_args.num_heads * self.head_dim, model_args.dim, bias=False)
+
+        self.lambda_q1 = nn.Parameter(torch.zeros(self.head_dim))
+        self.lambda_k1 = nn.Parameter(torch.zeros(self.head_dim))
+        self.lambda_q2 = nn.Parameter(torch.zeros(self.head_dim))
+        self.lambda_k2 = nn.Parameter(torch.zeros(self.head_dim))
+        self.lambda_init = nn.Parameter(torch.tensor(0.8))
+
+        self.norm = nn.LayerNorm(model_args.dim, eps=model_args.norm_eps)
+        
+        self.scale = self.head_dim ** -0.5
+
+    def forward(self, x: torch.Tensor, mask: Optional[BlockMask] = None, freqs_cis: Optional[torch.Tensor] = None) -> torch.Tensor:
+        bsz, seqlen, _ = x.shape
+        
+        # Apply layer norm
+        x = self.norm(x)
+
+        # Linear projections
+        q = self.wq(x)
+        k = self.wk(x)
+        v = self.wv(x)
+
+        # Reshape
+        q = q.view(bsz, seqlen, self.num_heads, self.head_dim)
+        k = k.view(bsz, seqlen, self.num_kv_heads, self.head_dim)
+        v = v.view(bsz, seqlen, self.num_kv_heads, self.head_dim)
+
+        # Apply rotary embeddings if provided
+        if freqs_cis is not None:
+            q, k = apply_rotary_emb(q, k, freqs_cis=freqs_cis)
+
+        # Prepare for attention
+        q = q.transpose(1, 2)
+        k = repeat_kv(k.transpose(1, 2), self.num_rep)
+        v = repeat_kv(v.transpose(1, 2), self.num_rep)
+
+        # Compute attention using flex_attention
+        attn_output = flex_attention(q, k, v, block_mask=mask, scale=self.scale, enable_gqa=True)
+
+        # Apply differential attention
+        lambda_1 = torch.exp(torch.sum(self.lambda_q1 * self.lambda_k1, dim=-1).float()).type_as(q)
+        lambda_2 = torch.exp(torch.sum(self.lambda_q2 * self.lambda_k2, dim=-1).float()).type_as(q)
+        lambda_full = lambda_1 - lambda_2 + self.lambda_init
+        
+        attn_output = attn_output.view(bsz, self.num_heads, 2, seqlen, self.head_dim)
+        attn_output = attn_output[:, :, 0] - lambda_full.unsqueeze(-1).unsqueeze(-1) * attn_output[:, :, 1]
+        
+        # Apply SubLN and scaling
+        attn_output = self.norm(attn_output)
+        attn_output = attn_output * (1 - self.lambda_init)
+
+        # Reshape and project output
+        attn_output = attn_output.transpose(1, 2).reshape(bsz, seqlen, self.num_heads * self.head_dim)
+        output = self.wo(attn_output)
+
+        return output
+
+    def init_weights(self, init_std: float):
+        nn.init.normal_(self.lambda_q1, mean=0, std=0.1)
+        nn.init.normal_(self.lambda_k1, mean=0, std=0.1)
+        nn.init.normal_(self.lambda_q2, mean=0, std=0.1)
+        nn.init.normal_(self.lambda_k2, mean=0, std=0.1)
+        nn.init.constant_(self.lambda_init, 0.8)
+        
+        for linear in (self.wq, self.wk, self.wv):
+            nn.init.trunc_normal_(linear.weight, mean=0.0, std=0.02)
+        nn.init.trunc_normal_(self.wo.weight, mean=0.0, std=init_std)
+
 class Attention(nn.Module):
     """
     Multi-head attention module.
@@ -174,6 +255,7 @@ class Attention(nn.Module):
         self,
         x: torch.Tensor,
         freqs_cis: torch.Tensor,
+        mask: Optional[BlockMask]
     ):
         """
         Forward pass of the attention module.
@@ -207,7 +289,8 @@ class Attention(nn.Module):
         xv = values.transpose(1, 2)  # (bs, n_local_heads, seqlen, head_dim)
 
         # we use casual mask for training
-        output = F.scaled_dot_product_attention(xq, xk, xv, is_causal=True)
+        attn_output = flex_attention(xq, xk, xv, block_mask=mask, scale=self.scale, enable_gqa=True)
+
         output = output.transpose(
             1, 2
         ).contiguous()  # (bs, seqlen, n_local_heads, head_dim)
@@ -283,7 +366,7 @@ class TransformerBlock(nn.Module):
         super().__init__()
         self.n_heads = model_args.n_heads
         self.dim = model_args.dim
-        self.attention = Attention(model_args)
+        self.attention = DifferentialAttention(model_args)
         self.feed_forward = FeedForward(
             dim=model_args.dim,
             hidden_dim=4 * model_args.dim,
@@ -305,25 +388,10 @@ class TransformerBlock(nn.Module):
         else:
             self.weight_init_std = 0.02 / (2 * self.num_layers) ** 0.5
 
-    def forward(
-        self,
-        x: torch.Tensor,
-        freqs_cis: torch.Tensor,
-    ):
-        """
-        Perform a forward pass through the TransformerBlock.
-
-        Args:
-            x (torch.Tensor): Input tensor.
-            freqs_cis (torch.Tensor): Precomputed cosine and sine frequencies.
-
-        Returns:
-            torch.Tensor: Output tensor after applying attention and feedforward layers.
-
-        """
-        h = x + self.attention(self.attention_norm(x), freqs_cis)
+    def forward(self, x: torch.Tensor, mask: Optional[BlockMask], freqs_cis: torch.Tensor):
+        h = x + self.attention(self.attention_norm(x), mask, freqs_cis)
         out = h + self.feed_forward(self.ffn_norm(h))
-        return out
+        return out 
 
     def init_weights(self):
         for norm in (self.attention_norm, self.ffn_norm):
@@ -421,22 +489,11 @@ class Transformer(nn.Module):
             self.model_args.rope_theta,
         )
 
-    def forward(self, tokens: torch.Tensor):
-        """
-        Perform a forward pass through the Transformer model.
-
-        Args:
-            tokens (torch.Tensor): Input token indices.
-
-        Returns:
-            torch.Tensor: Output logits after applying the Transformer model.
-
-        """
-        # passthrough for nonexistent layers, allows easy configuration of pipeline parallel stages
+    def forward(self, tokens: torch.Tensor, mask: Optional[BlockMask]):
         h = self.tok_embeddings(tokens) if self.tok_embeddings else tokens
 
         for layer in self.layers.values():
-            h = layer(h, self.freqs_cis)
+            h = layer(h, mask, self.freqs_cis)
 
         h = self.norm(h) if self.norm else h
         output = self.output(h) if self.output else h

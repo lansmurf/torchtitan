@@ -27,6 +27,28 @@ from torchtitan.parallelisms import (
     ParallelDims,
 )
 from torchtitan.profiling import maybe_enable_memory_snapshot, maybe_enable_profiling
+from torch.nn.attention.flex_attention import create_block_mask
+
+
+def get_train_context(enable_loss_parallel: bool, enable_compiled_autograd: bool):
+    @contextlib.contextmanager
+    def context():
+        with contextlib.ExitStack() as stack:
+            if enable_loss_parallel:
+                stack.enter_context(torch.distributed.tensor.parallel.loss_parallel())
+            if enable_compiled_autograd:
+                stack.enter_context(
+                    torch._dynamo.utils.maybe_enable_compiled_autograd(True)
+                )
+            yield
+
+    return context
+
+def create_causal_mask(batch_size: int, seq_len: int, n_heads: int, device: torch.device) -> BlockMask:
+    def causal_mask_mod(b, h, q_idx, kv_idx):
+        return q_idx >= kv_idx
+    
+    return create_block_mask(causal_mask_mod, batch_size, n_heads, seq_len, seq_len, device=device)
 
 
 # Enable debug tracing on failure: https://pytorch.org/docs/stable/elastic/errors.html
@@ -273,7 +295,13 @@ def main(job_config: JobConfig):
                     cp_no_restore_buffers={input_ids, labels},
                 )
                 if parallel_dims.cp_enabled
-                else None
+                else None)
+            
+            causal_mask = create_causal_mask(
+                batch_size=input_ids.size(0),
+                seq_len=input_ids.size(1),
+                n_heads=model_config.n_heads,
+                device=input_ids.device
             )
 
             if parallel_dims.pp_enabled:
@@ -298,7 +326,7 @@ def main(job_config: JobConfig):
             else:
                 # Non-PP forward / backward
                 with train_context(optional_context_parallel_ctx):
-                    pred = model(input_ids)
+                    pred = model(input_ids, causal_mask)
                     loss = loss_fn(pred, labels)
                     # pred.shape=(bs, seq_len, vocab_size)
                     # need to free to before bwd to avoid peaking memory

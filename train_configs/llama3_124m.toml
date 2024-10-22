@@ -1,0 +1,64 @@
+# torchtitan Config.toml
+# NOTE: this toml config is for Llama 3 124M with FSDP
+
+[job]
+dump_folder = "./outputs"
+description = "Llama 3 124M training with FSDP"
+
+[profiling]
+enable_profiling = true
+save_traces_folder = "profile_trace"
+profile_freq = 100
+
+[metrics]
+log_freq = 10
+enable_tensorboard = true
+save_tb_folder = "tb"
+
+[model]
+name = "llama3"
+flavor = "124M"
+norm_type = "rmsnorm"
+tokenizer_path = "./torchtitan/datasets/tokenizer/original/tokenizer.model"
+
+[optimizer]
+name = "AdamW"
+lr = 2e-5  # Increased slightly as smaller models often benefit from higher learning rates
+
+[training]
+batch_size = 64  # Increased as smaller models can handle larger batch sizes
+seq_len = 2048  # Reduced from 4096 to be more appropriate for a smaller model
+warmup_steps = 100
+max_norm = 1.0
+steps = 2000  # Increased as smaller models might need more steps to converge
+data_parallel_replicate_degree = 1
+data_parallel_shard_degree = -1  # This activates FSDP
+tensor_parallel_degree = 1
+compile = false
+dataset = "c4"
+
+[experimental]
+pipeline_parallel_degree = 1
+
+[checkpoint]
+enable_checkpoint = false
+folder = "checkpoint"
+interval_type = "steps"
+interval = 500
+model_weights_only = false
+export_dtype = "bfloat16"  # Keeping bfloat16 as in the 1B config
+async_mode = "disabled"
+
+[activation_checkpoint]
+mode = 'selective'
+selective_ac_option = 'op'
+
+[float8]
+enable_float8_linear = false
+
+[fsdp]
+sharding_strategy = "FULL_SHARD"
+backward_prefetch = "BACKWARD_PRE"
+mixed_precision = "FULL"
+flatten_parameters = true
+activation_checkpointing = true

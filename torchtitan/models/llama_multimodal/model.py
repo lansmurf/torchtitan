@@ -9,11 +9,12 @@
 
 import math
 from dataclasses import dataclass
-from typing import Any, List, Optional, Tuple
+from typing import Any, List, Optional, Tuple, Dic
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.attention.flex_attention import flex_attention, create_block_mask, BlockMask
 
 
 @dataclass
@@ -139,6 +140,102 @@ def repeat_kv(x: torch.Tensor, num_rep: int) -> torch.Tensor:
         torch.unsqueeze(x, dim=3)
         .expand(bsz, seq_len, num_kv_heads, num_rep, head_dim)
         .reshape(bsz, seq_len, num_kv_heads * num_rep, head_dim)
+    )
+
+class DifferentialAttention(nn.Module):
+    """
+    Differential Attention module as described in the Llama 2 paper,
+    using torch.nn.attention.flex_attention.
+    """
+
+    def __init__(self, model_args: ModelArgs):
+        super().__init__()
+        self.num_heads = model_args.num_heads
+        self.num_kv_heads = model_args.num_kv_heads if model_args.num_kv_heads is not None else model_args.num_heads
+        self.num_rep = self.num_heads // self.num_kv_heads
+        self.head_dim = model_args.dim // model_args.num_heads
+        
+        self.wq = nn.Linear(model_args.dim, model_args.num_heads * self.head_dim, bias=False)
+        self.wk = nn.Linear(model_args.dim, self.num_kv_heads * self.head_dim, bias=False)
+        self.wv = nn.Linear(model_args.dim, self.num_kv_heads * self.head_dim, bias=False)
+        self.wo = nn.Linear(model_args.num_heads * self.head_dim, model_args.dim, bias=False)
+
+        self.lambda_q1 = nn.Parameter(torch.zeros(self.head_dim))
+        self.lambda_k1 = nn.Parameter(torch.zeros(self.head_dim))
+        self.lambda_q2 = nn.Parameter(torch.zeros(self.head_dim))
+        self.lambda_k2 = nn.Parameter(torch.zeros(self.head_dim))
+        self.lambda_init = nn.Parameter(torch.tensor(0.8))
+
+        self.norm = nn.LayerNorm(model_args.dim, eps=model_args.norm_eps)
+        
+        self.scale = self.head_dim ** -0.5
+
+    def forward(self, x: torch.Tensor, mask: Optional[BlockMask] = None, freqs_cis: Optional[torch.Tensor] = None) -> torch.Tensor:
+        bsz, seqlen, _ = x.shape
+        
+        # Apply layer norm
+        x = self.norm(x)
+
+        # Linear projections
+        q = self.wq(x)
+        k = self.wk(x)
+        v = self.wv(x)
+
+        # Reshape
+        q = q.view(bsz, seqlen, self.num_heads, self.head_dim)
+        k = k.view(bsz, seqlen, self.num_kv_heads, self.head_dim)
+        v = v.view(bsz, seqlen, self.num_kv_heads, self.head_dim)
+
+        # Apply rotary embeddings if provided
+        if freqs_cis is not None:
+            q, k = apply_rotary_emb(q, k, freqs_cis=freqs_cis)
+
+        # Prepare for attention
+        q = q.transpose(1, 2)
+        k = repeat_kv(k.transpose(1, 2), self.num_rep)
+        v = repeat_kv(v.transpose(1, 2), self.num_rep)
+
+        # Compute attention using flex_attention
+        attn_output = flex_attention(q, k, v, block_mask=mask, scale=self.scale, enable_gqa=True)
+
+        # Apply differential attention
+        lambda_1 = torch.exp(torch.sum(self.lambda_q1 * self.lambda_k1, dim=-1).float()).type_as(q)
+        lambda_2 = torch.exp(torch.sum(self.lambda_q2 * self.lambda_k2, dim=-1).float()).type_as(q)
+        lambda_full = lambda_1 - lambda_2 + self.lambda_init
+        
+        attn_output = attn_output.view(bsz, self.num_heads, 2, seqlen, self.head_dim)
+        attn_output = attn_output[:, :, 0] - lambda_full.unsqueeze(-1).unsqueeze(-1) * attn_output[:, :, 1]
+        
+        # Apply SubLN and scaling
+        attn_output = self.norm(attn_output)
+        attn_output = attn_output * (1 - self.lambda_init)
+
+        # Reshape and project output
+        attn_output = attn_output.transpose(1, 2).reshape(bsz, seqlen, self.num_heads * self.head_dim)
+        output = self.wo(attn_output)
+
+        return output
+
+    def init_weights(self, init_std: float):
+        nn.init.normal_(self.lambda_q1, mean=0, std=0.1)
+        nn.init.normal_(self.lambda_k1, mean=0, std=0.1)
+        nn.init.normal_(self.lambda_q2, mean=0, std=0.1)
+        nn.init.normal_(self.lambda_k2, mean=0, std=0.1)
+        nn.init.constant_(self.lambda_init, 0.8)
+        
+        for linear in (self.wq, self.wk, self.wv):
+            nn.init.trunc_normal_(linear.weight, mean=0.0, std=0.02)
+        nn.init.trunc_normal_(self.wo.weight, mean=0.0, std=init_std)
+
+# Helper function
+def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
+    bs, n_kv_heads, slen, head_dim = x.shape
+    if n_rep == 1:
+        return x
+    return (
+        x[:, :, None, :, :]
+        .expand(bs, n_kv_heads, n_rep, slen, head_dim)
+        .reshape(bs, n_kv_heads * n_rep, slen, head_dim)
     )
 
 
@@ -526,8 +623,8 @@ class VitTransformerBlock(nn.Module):
         mlp_scale: Optional[nn.Module] = None,
     ):
         super().__init__()
-        self.attn = Attention(model_args)
-        self.ln_attn = Fp32LayerNorm(model_args.dim, eps=1e-5)
+        self.attn = DifferentialAttention(model_args)
+        self.ln_attn = nn.LayerNorm(model_args.dim, eps=1e-5)
         self.mlp = FeedForward(
             dim=model_args.dim,
             hidden_dim=4 * model_args.dim,
@@ -535,20 +632,18 @@ class VitTransformerBlock(nn.Module):
             ffn_dim_multiplier=model_args.ffn_dim_multiplier,
             activation=model_args.activation,
         )
-        self.ln_mlp = Fp32LayerNorm(model_args.dim, eps=1e-5)
+        self.ln_mlp = nn.LayerNorm(model_args.dim, eps=1e-5)
         self.attn_scale = attn_scale or nn.Identity()
         self.mlp_scale = mlp_scale or nn.Identity()
 
     def forward(
         self,
         x: torch.Tensor,
-        mask: Optional[torch.Tensor] = None,
+        mask: Optional[BlockMask] = None,
+        freqs_cis: Optional[torch.Tensor] = None,
     ):
-        bsz, seq_len, emd_dim = x.shape
-        # x = x.view(bsz * seq_len, emd_dim)
-        x = x + self.attn_scale(self.attn(x=self.ln_attn(x), freqs_cis=None))
+        x = x + self.attn_scale(self.attn(x=self.ln_attn(x), mask=mask, freqs_cis=freqs_cis))
         x = x + self.mlp_scale(self.mlp(self.ln_mlp(x)))
-        # return x.view(bsz, seq_len, emd_dim)
         return x
 
 
