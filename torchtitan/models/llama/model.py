@@ -130,15 +130,15 @@ class DifferentialAttention(nn.Module):
 
     def __init__(self, model_args: ModelArgs):
         super().__init__()
-        self.num_heads = model_args.num_heads
-        self.num_kv_heads = model_args.num_kv_heads if model_args.num_kv_heads is not None else model_args.num_heads
+        self.num_heads = model_args.n_heads
+        self.num_kv_heads = model_args.n_kv_heads if model_args.n_kv_heads is not None else model_args.num_heads
         self.num_rep = self.num_heads // self.num_kv_heads
-        self.head_dim = model_args.dim // model_args.num_heads
+        self.head_dim = model_args.dim // model_args.n_heads
         
-        self.wq = nn.Linear(model_args.dim, model_args.num_heads * self.head_dim, bias=False)
+        self.wq = nn.Linear(model_args.dim, model_args.n_heads * self.head_dim, bias=False)
         self.wk = nn.Linear(model_args.dim, self.num_kv_heads * self.head_dim, bias=False)
         self.wv = nn.Linear(model_args.dim, self.num_kv_heads * self.head_dim, bias=False)
-        self.wo = nn.Linear(model_args.num_heads * self.head_dim, model_args.dim, bias=False)
+        self.wo = nn.Linear(model_args.n_heads * self.head_dim, model_args.dim, bias=False)
 
         self.lambda_q1 = nn.Parameter(torch.zeros(self.head_dim))
         self.lambda_k1 = nn.Parameter(torch.zeros(self.head_dim))
