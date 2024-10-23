@@ -27,7 +27,7 @@ from torchtitan.parallelisms import (
     ParallelDims,
 )
 from torchtitan.profiling import maybe_enable_memory_snapshot, maybe_enable_profiling
-from torch.nn.attention.flex_attention import create_block_mask
+from torch.nn.attention.flex_attention import create_block_mask, BlockMask
 
 
 def get_train_context(enable_loss_parallel: bool, enable_compiled_autograd: bool):
