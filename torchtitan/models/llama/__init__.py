@@ -41,16 +41,6 @@ llama3_configs = {
         max_seq_len=131072,  # Keeping the same as 1B
         vocab_size=128256,  # Keeping the same as 1B
         rope_theta=500000.0,  # Same as 1B
-        rope_scaling={
-            "type": "llama3",
-            "factor": 32.0,
-            "high_freq_factor": 4.0,
-            "low_freq_factor": 1.0,
-            "original_max_position_embeddings": 8192,
-        },
-        attention_bias=False,
-        mlp_bias=False,
-        head_dim=64,  # Keeping the same as 1B
     ),
     "1B": ModelArgs(
         dim=2048,  # hidden_size
@@ -63,16 +53,6 @@ llama3_configs = {
         max_seq_len=131072,  # max_position_embeddings
         vocab_size=128256,
         rope_theta=500000.0,
-        rope_scaling={
-            "type": "llama3",
-            "factor": 32.0,
-            "high_freq_factor": 4.0,
-            "low_freq_factor": 1.0,
-            "original_max_position_embeddings": 8192,
-        },
-        attention_bias=False,
-        mlp_bias=False,
-        head_dim=64,
     ),
     "8B": ModelArgs(
         dim=4096,
