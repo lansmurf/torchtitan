@@ -26,16 +26,16 @@ name = "AdamW"
 lr = 2e-5  # Increased slightly as smaller models often benefit from higher learning rates
 
 [training]
-batch_size = 64  # Increased as smaller models can handle larger batch sizes
-seq_len = 2048  # Reduced from 4096 to be more appropriate for a smaller model
+batch_size = 32  # Increased as smaller models can handle larger batch sizes
+seq_len = 4096  # Reduced from 4096 to be more appropriate for a smaller model
 warmup_steps = 100
 max_norm = 1.0
 steps = 2000  # Increased as smaller models might need more steps to converge
 data_parallel_replicate_degree = 1
-data_parallel_shard_degree = -1  # This activates FSDP
+data_parallel_shard_degree = 1  # This activates FSDP
 tensor_parallel_degree = 1
-compile = false
-dataset = "c4"
+compile = true
+dataset = "c4_mini"
 
 [experimental]
 pipeline_parallel_degree = 1
