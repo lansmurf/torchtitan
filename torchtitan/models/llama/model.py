@@ -130,14 +130,14 @@ class DifferentialAttention(nn.Module):
 
     def __init__(self, model_args: ModelArgs):
         super().__init__()
-        self.num_heads = model_args.n_heads
-        self.num_kv_heads = model_args.n_kv_heads if model_args.n_kv_heads is not None else model_args.num_heads
-        self.num_rep = self.num_heads // self.num_kv_heads
+        self.n_heads = model_args.n_heads
+        self.n_kv_heads = model_args.n_kv_heads if model_args.n_kv_heads is not None else model_args.n_heads
+        self.num_rep = self.n_heads // self.n_kv_heads
         self.head_dim = model_args.dim // model_args.n_heads
         
         self.wq = nn.Linear(model_args.dim, model_args.n_heads * self.head_dim, bias=False)
-        self.wk = nn.Linear(model_args.dim, self.num_kv_heads * self.head_dim, bias=False)
-        self.wv = nn.Linear(model_args.dim, self.num_kv_heads * self.head_dim, bias=False)
+        self.wk = nn.Linear(model_args.dim, self.n_kv_heads * self.head_dim, bias=False)
+        self.wv = nn.Linear(model_args.dim, self.n_kv_heads * self.head_dim, bias=False)
         self.wo = nn.Linear(model_args.n_heads * self.head_dim, model_args.dim, bias=False)
 
         self.lambda_q1 = nn.Parameter(torch.zeros(self.head_dim))
@@ -162,9 +162,9 @@ class DifferentialAttention(nn.Module):
         v = self.wv(x)
 
         # Reshape and split into two parts
-        q = q.view(bsz, seqlen, 2, self.num_heads, self.head_dim)
-        k = k.view(bsz, seqlen, 2, self.num_kv_heads, self.head_dim)
-        v = v.view(bsz, seqlen, 2, self.num_kv_heads, self.head_dim)
+        q = q.view(bsz, seqlen, 2, self.n_heads, self.head_dim)
+        k = k.view(bsz, seqlen, 2, self.n_kv_heads, self.head_dim)
+        v = v.view(bsz, seqlen, 2, self.n_kv_heads, self.head_dim)
         
         q1, q2 = q[:, :, 0], q[:, :, 1]  # Split queries
         k1, k2 = k[:, :, 0], k[:, :, 1]  # Split keys
@@ -200,7 +200,7 @@ class DifferentialAttention(nn.Module):
         attn_output = attn_output * (1 - self.lambda_init)
 
         # Reshape and project output
-        attn_output = attn_output.transpose(1, 2).reshape(bsz, seqlen, self.num_heads * self.head_dim)
+        attn_output = attn_output.transpose(1, 2).reshape(bsz, seqlen, self.n_heads * self.head_dim)
         output = self.wo(attn_output)
 
         return output
