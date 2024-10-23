@@ -161,30 +161,39 @@ class DifferentialAttention(nn.Module):
         k = self.wk(x)
         v = self.wv(x)
 
-        # Reshape
-        q = q.view(bsz, seqlen, self.num_heads, self.head_dim)
-        k = k.view(bsz, seqlen, self.num_kv_heads, self.head_dim)
-        v = v.view(bsz, seqlen, self.num_kv_heads, self.head_dim)
+        # Reshape and split into two parts
+        q = q.view(bsz, seqlen, 2, self.num_heads, self.head_dim)
+        k = k.view(bsz, seqlen, 2, self.num_kv_heads, self.head_dim)
+        v = v.view(bsz, seqlen, 2, self.num_kv_heads, self.head_dim)
+        
+        q1, q2 = q[:, :, 0], q[:, :, 1]  # Split queries
+        k1, k2 = k[:, :, 0], k[:, :, 1]  # Split keys
+        v1, v2 = v[:, :, 0], v[:, :, 1]  # Split values
 
         # Apply rotary embeddings if provided
         if freqs_cis is not None:
-            q, k = apply_rotary_emb(q, k, freqs_cis=freqs_cis)
+            q1, k1 = apply_rotary_emb(q1, k1, freqs_cis=freqs_cis)
+            q2, k2 = apply_rotary_emb(q2, k2, freqs_cis=freqs_cis)
 
         # Prepare for attention
-        q = q.transpose(1, 2)
-        k = repeat_kv(k.transpose(1, 2), self.num_rep)
-        v = repeat_kv(v.transpose(1, 2), self.num_rep)
+        q1 = q1.transpose(1, 2)
+        q2 = q2.transpose(1, 2)
+        k1 = repeat_kv(k1.transpose(1, 2), self.num_rep)
+        k2 = repeat_kv(k2.transpose(1, 2), self.num_rep)
+        v1 = repeat_kv(v1.transpose(1, 2), self.num_rep)
+        v2 = repeat_kv(v2.transpose(1, 2), self.num_rep)
 
-        # Compute attention using flex_attention
-        attn_output = flex_attention(q, k, v, block_mask=mask, scale=self.scale, enable_gqa=True)
+        # Compute two separate attention operations
+        attn_output1 = flex_attention(q1, k1, v1, block_mask=mask, scale=self.scale, enable_gqa=True)
+        attn_output2 = flex_attention(q2, k2, v2, block_mask=mask, scale=self.scale, enable_gqa=True)
 
-        # Apply differential attention
+        # Apply diff attention
         lambda_1 = torch.exp(torch.sum(self.lambda_q1 * self.lambda_k1, dim=-1).float()).type_as(q)
         lambda_2 = torch.exp(torch.sum(self.lambda_q2 * self.lambda_k2, dim=-1).float()).type_as(q)
         lambda_full = lambda_1 - lambda_2 + self.lambda_init
         
-        attn_output = attn_output.view(bsz, self.num_heads, 2, seqlen, self.head_dim)
-        attn_output = attn_output[:, :, 0] - lambda_full.unsqueeze(-1).unsqueeze(-1) * attn_output[:, :, 1]
+        # Combine
+        attn_output = attn_output1 - lambda_full.unsqueeze(-1).unsqueeze(-1) * attn_output2
         
         # Apply SubLN and scaling
         attn_output = self.norm(attn_output)

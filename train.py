@@ -212,6 +212,8 @@ def main(job_config: JobConfig):
     )
 
     if job_config.checkpoint.create_seed_checkpoint:
+        for m in model_parts:
+            m.init_weights()
         assert (
             world_size == 1
         ), "Must create seed-checkpoint using one gpu, to disable sharding"
@@ -220,6 +222,9 @@ def main(job_config: JobConfig):
         return
 
     checkpoint_loaded = checkpoint.load()
+    if not checkpoint_loaded:
+        for m in model_parts:
+            m.init_weights()
 
     if parallel_dims.pp_enabled and not checkpoint_loaded:
         # TODO: fix this by allowing each rank to set their own seed
