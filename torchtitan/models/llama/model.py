@@ -166,8 +166,8 @@ class DifferentialAttention(nn.Module):
 
         # Apply rotary embeddings if provided
         if freqs_cis is not None:
-            q = apply_rotary_emb(q, freqs_cis, interleaved=True)
-            k = apply_rotary_emb(k, freqs_cis, interleaved=True)
+            q = apply_rotary_emb(q, freqs_cis)
+            k = apply_rotary_emb(k, freqs_cis)
 
         # Split queries and keys, keep values combined
         q = q.reshape(bsz, seqlen, self.n_heads, 2, self.head_dim)
