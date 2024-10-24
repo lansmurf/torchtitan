@@ -102,6 +102,33 @@ def _precompute_freqs_cis(self):
         self.model_args.rope_theta,
     )
 
+def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
+    """Repeats the kv heads n_rep times."""
+    print(f"\nIn repeat_kv:")
+    # Input expected to be [bs, slen, n_kv_heads, head_dim]
+    bs, n_kv_heads, slen, head_dim = x.shape  # Note: input should be transposed already
+    print(f"input shape: bs={bs}, n_kv_heads={n_kv_heads}, slen={slen}, head_dim={head_dim}")
+    print(f"n_rep: {n_rep}")
+    
+    if n_rep == 1:
+        print("n_rep=1, returning input unchanged")
+        return x
+    
+    # Shape progression:
+    # 1. unsqueeze: [bs, n_kv_heads, slen, 1, head_dim]
+    # 2. expand: [bs, n_kv_heads, slen, n_rep, head_dim]
+    # 3. reshape: [bs, n_kv_heads * n_rep, slen, head_dim]
+    
+    expanded = torch.unsqueeze(x, dim=3)
+    print(f"after unsqueeze: {expanded.shape}")
+    
+    expanded = expanded.expand(bs, n_kv_heads, slen, n_rep, head_dim)
+    print(f"after expand: {expanded.shape}")
+    
+    result = expanded.reshape(bs, n_kv_heads * n_rep, slen, head_dim)
+    print(f"after reshape: {result.shape}")
+    
+    return result
 
 class DifferentialAttention(nn.Module):
     def __init__(self, model_args: ModelArgs):
