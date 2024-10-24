@@ -129,93 +129,83 @@ def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
 class DifferentialAttention(nn.Module):
     def __init__(self, model_args: ModelArgs):
         super().__init__()
-        self.n_heads = model_args.n_heads 
+        self.n_heads = model_args.n_heads
         self.n_kv_heads = model_args.n_kv_heads if model_args.n_kv_heads is not None else model_args.n_heads
         self.num_rep = self.n_heads // self.n_kv_heads
-        self.head_dim = model_args.dim // model_args.n_heads
+        self.head_dim = model_args.dim // model_args.n_heads // 2  # Halved head dimension
         
-        # Changed: Double the output dimension for k and v projections
-        self.wq = nn.Linear(model_args.dim, model_args.n_heads * self.head_dim, bias=False)
-        self.wk = nn.Linear(model_args.dim, 2 * self.n_kv_heads * self.head_dim, bias=False)
-        self.wv = nn.Linear(model_args.dim, 2 * self.n_kv_heads * self.head_dim, bias=False)
-        self.wo = nn.Linear(model_args.n_heads * self.head_dim, model_args.dim, bias=False)
+        # Project to full dimension for queries (2 sets), half dimension for k/v
+        self.wq = nn.Linear(model_args.dim, model_args.dim, bias=False)  # Full dim for 2 sets
+        self.wk = nn.Linear(model_args.dim, model_args.dim // self.num_rep, bias=False)  # Half dim
+        self.wv = nn.Linear(model_args.dim, model_args.dim // self.num_rep, bias=False)  # Half dim
+        self.wo = nn.Linear(model_args.dim, model_args.dim, bias=False)
 
-        self.lambda_q1 = nn.Parameter(torch.zeros(self.head_dim))
-        self.lambda_k1 = nn.Parameter(torch.zeros(self.head_dim))
-        self.lambda_q2 = nn.Parameter(torch.zeros(self.head_dim))
-        self.lambda_k2 = nn.Parameter(torch.zeros(self.head_dim))
-        self.lambda_init = nn.Parameter(torch.tensor([0.8]))
+        # Lambda parameters
+        self.lambda_q1 = nn.Parameter(torch.zeros(self.head_dim, dtype=torch.float32).normal_(mean=0, std=0.1))
+        self.lambda_k1 = nn.Parameter(torch.zeros(self.head_dim, dtype=torch.float32).normal_(mean=0, std=0.1))
+        self.lambda_q2 = nn.Parameter(torch.zeros(self.head_dim, dtype=torch.float32).normal_(mean=0, std=0.1))
+        self.lambda_k2 = nn.Parameter(torch.zeros(self.head_dim, dtype=torch.float32).normal_(mean=0, std=0.1))
+        self.lambda_init = nn.Parameter(torch.tensor([0.8]))  # Keep as 1D tensor for FSDP
 
-        self.norm = nn.LayerNorm(model_args.dim, eps=model_args.norm_eps)
-        
+        # Sublayer norm without affine parameters
+        self.subln = build_norm(model_args.norm_type, 2 * self.head_dim, eps=model_args.norm_eps, elementwise_affine=False)
         self.scale = self.head_dim ** -0.5
 
     def forward(self, x: torch.Tensor, mask: Optional[BlockMask] = None, freqs_cis: Optional[torch.Tensor] = None) -> torch.Tensor:
-        bsz, seqlen, _ = x.shape
-        
-        # Apply layer norm
-        x = self.norm(x)
+        bsz, seqlen, embed_dim = x.shape
 
-        # Linear projections - now k and v have 2x the dimension
-        q = self.wq(x)  # [bsz, seqlen, n_heads * head_dim]
-        k = self.wk(x)  # [bsz, seqlen, 2 * n_kv_heads * head_dim]
-        v = self.wv(x)  # [bsz, seqlen, 2 * n_kv_heads * head_dim]
+        # Linear projections
+        q = self.wq(x)  # [bsz, seqlen, embed_dim]
+        k = self.wk(x)  # [bsz, seqlen, embed_dim//2]
+        v = self.wv(x)  # [bsz, seqlen, embed_dim//2]
 
-        # Changed: Reshape to handle the doubled k,v dimensions
-        q = q.view(bsz, seqlen, self.n_heads, self.head_dim)
+        # Reshape with doubled heads
+        q = q.view(bsz, seqlen, 2 * self.n_heads, self.head_dim)
         k = k.view(bsz, seqlen, 2 * self.n_kv_heads, self.head_dim)
-        v = v.view(bsz, seqlen, 2 * self.n_kv_heads, self.head_dim)
-        
-        # Split k and v into two parts along the head dimension
-        k1, k2 = k.chunk(2, dim=2)  # Each is [bsz, seqlen, n_kv_heads, head_dim]
-        v1, v2 = v.chunk(2, dim=2)  # Each is [bsz, seqlen, n_kv_heads, head_dim]
-        
-        # Split queries (note: queries are repeated for each half)
-        q1 = q  # [bsz, seqlen, n_heads, head_dim]
-        q2 = q  # [bsz, seqlen, n_heads, head_dim]
+        v = v.view(bsz, seqlen, self.n_kv_heads, 2 * self.head_dim)  # Combined v dimension
 
         # Apply rotary embeddings if provided
         if freqs_cis is not None:
-            q1, k1 = apply_rotary_emb(q1, k1, freqs_cis=freqs_cis)
-            q2, k2 = apply_rotary_emb(q2, k2, freqs_cis=freqs_cis)
+            q = apply_rotary_emb(q, freqs_cis, interleaved=True)
+            k = apply_rotary_emb(k, freqs_cis, interleaved=True)
+
+        # Split queries and keys, keep values combined
+        q = q.reshape(bsz, seqlen, self.n_heads, 2, self.head_dim)
+        k = k.reshape(bsz, seqlen, self.n_kv_heads, 2, self.head_dim)
+        q1, q2 = q[:, :, :, 0], q[:, :, :, 1]  # First and second query sets
+        k1, k2 = k[:, :, :, 0], k[:, :, :, 1]  # First and second key sets
 
         # Prepare for attention
         q1 = q1.transpose(1, 2)  # [bsz, n_heads, seqlen, head_dim]
-        q2 = q2.transpose(1, 2)  # [bsz, n_heads, seqlen, head_dim]
-        k1 = repeat_kv(k1.transpose(1, 2), self.num_rep)  # [bsz, n_heads, seqlen, head_dim]
-        k2 = repeat_kv(k2.transpose(1, 2), self.num_rep)  # [bsz, n_heads, seqlen, head_dim]
-        v1 = repeat_kv(v1.transpose(1, 2), self.num_rep)  # [bsz, n_heads, seqlen, head_dim]
-        v2 = repeat_kv(v2.transpose(1, 2), self.num_rep)  # [bsz, n_heads, seqlen, head_dim]
+        q2 = q2.transpose(1, 2)
+        k1 = repeat_kv(k1.transpose(1, 2), self.num_rep)
+        k2 = repeat_kv(k2.transpose(1, 2), self.num_rep)
+        v = repeat_kv(v.transpose(1, 2), self.num_rep)  # Single v for both attentions
 
-        # Compute two separate attention operations
-        attn_output1 = flex_attention(q1, k1, v1, block_mask=mask, scale=self.scale, enable_gqa=True)
-        attn_output2 = flex_attention(q2, k2, v2, block_mask=mask, scale=self.scale, enable_gqa=True)
+        # Compute attentions
+        attn1 = flex_attention(q1, k1, v, block_mask=mask, scale=self.scale, enable_gqa=True)
+        attn2 = flex_attention(q2, k2, v, block_mask=mask, scale=self.scale, enable_gqa=True)
 
-        # Apply diff attention
+        # Apply differential attention
         lambda_1 = torch.exp(torch.sum(self.lambda_q1 * self.lambda_k1, dim=-1).float()).type_as(q)
         lambda_2 = torch.exp(torch.sum(self.lambda_q2 * self.lambda_k2, dim=-1).float()).type_as(q)
         lambda_full = lambda_1 - lambda_2 + self.lambda_init[0]
         
-        # Combine
-        attn_output = attn_output1 - lambda_full.unsqueeze(-1).unsqueeze(-1) * attn_output2
+        # Combine attentions
+        attn = attn1 - lambda_full * attn2
         
-        # Apply norm and scaling
-        attn_output = self.norm(attn_output)
-        attn_output = attn_output * (1 - self.lambda_init[0])
-
+        # Apply sublayer norm and scaling
+        attn = self.subln(attn)
+        attn = attn * (1 - self.lambda_init[0])
+        
         # Reshape and project output
-        attn_output = attn_output.transpose(1, 2).reshape(bsz, seqlen, self.n_heads * self.head_dim)
-        output = self.wo(attn_output)
+        attn = attn.transpose(1, 2).reshape(bsz, seqlen, self.n_heads * 2 * self.head_dim)
+        output = self.wo(attn)
 
         return output
-    
+
     def init_weights(self, init_std: float):
-        nn.init.normal_(self.lambda_q1, mean=0, std=0.1)
-        nn.init.normal_(self.lambda_k1, mean=0, std=0.1)
-        nn.init.normal_(self.lambda_q2, mean=0, std=0.1)
-        nn.init.normal_(self.lambda_k2, mean=0, std=0.1)
-        nn.init.constant_(self.lambda_init, 0.8)
-        
+        # Initialize projections
         for linear in (self.wq, self.wk, self.wv):
             nn.init.trunc_normal_(linear.weight, mean=0.0, std=0.02)
         nn.init.trunc_normal_(self.wo.weight, mean=0.0, std=init_std)
