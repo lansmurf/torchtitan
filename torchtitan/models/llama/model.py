@@ -127,17 +127,17 @@ def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
 
 
 class DifferentialAttention(nn.Module):
-
     def __init__(self, model_args: ModelArgs):
         super().__init__()
-        self.n_heads = model_args.n_heads
+        self.n_heads = model_args.n_heads 
         self.n_kv_heads = model_args.n_kv_heads if model_args.n_kv_heads is not None else model_args.n_heads
         self.num_rep = self.n_heads // self.n_kv_heads
         self.head_dim = model_args.dim // model_args.n_heads
         
+        # Changed: Double the output dimension for k and v projections
         self.wq = nn.Linear(model_args.dim, model_args.n_heads * self.head_dim, bias=False)
-        self.wk = nn.Linear(model_args.dim, self.n_kv_heads * self.head_dim, bias=False)
-        self.wv = nn.Linear(model_args.dim, self.n_kv_heads * self.head_dim, bias=False)
+        self.wk = nn.Linear(model_args.dim, 2 * self.n_kv_heads * self.head_dim, bias=False)
+        self.wv = nn.Linear(model_args.dim, 2 * self.n_kv_heads * self.head_dim, bias=False)
         self.wo = nn.Linear(model_args.n_heads * self.head_dim, model_args.dim, bias=False)
 
         self.lambda_q1 = nn.Parameter(torch.zeros(self.head_dim))
@@ -156,19 +156,23 @@ class DifferentialAttention(nn.Module):
         # Apply layer norm
         x = self.norm(x)
 
-        # Linear projections
-        q = self.wq(x)
-        k = self.wk(x)
-        v = self.wv(x)
+        # Linear projections - now k and v have 2x the dimension
+        q = self.wq(x)  # [bsz, seqlen, n_heads * head_dim]
+        k = self.wk(x)  # [bsz, seqlen, 2 * n_kv_heads * head_dim]
+        v = self.wv(x)  # [bsz, seqlen, 2 * n_kv_heads * head_dim]
 
-        # Reshape and split into two parts
-        q = q.view(bsz, seqlen, 2, self.n_heads, self.head_dim)
-        k = k.view(bsz, seqlen, 2, self.n_kv_heads, self.head_dim)
-        v = v.view(bsz, seqlen, 2, self.n_kv_heads, self.head_dim)
+        # Changed: Reshape to handle the doubled k,v dimensions
+        q = q.view(bsz, seqlen, self.n_heads, self.head_dim)
+        k = k.view(bsz, seqlen, 2 * self.n_kv_heads, self.head_dim)
+        v = v.view(bsz, seqlen, 2 * self.n_kv_heads, self.head_dim)
         
-        q1, q2 = q[:, :, 0], q[:, :, 1]  # Split queries
-        k1, k2 = k[:, :, 0], k[:, :, 1]  # Split keys
-        v1, v2 = v[:, :, 0], v[:, :, 1]  # Split values
+        # Split k and v into two parts along the head dimension
+        k1, k2 = k.chunk(2, dim=2)  # Each is [bsz, seqlen, n_kv_heads, head_dim]
+        v1, v2 = v.chunk(2, dim=2)  # Each is [bsz, seqlen, n_kv_heads, head_dim]
+        
+        # Split queries (note: queries are repeated for each half)
+        q1 = q  # [bsz, seqlen, n_heads, head_dim]
+        q2 = q  # [bsz, seqlen, n_heads, head_dim]
 
         # Apply rotary embeddings if provided
         if freqs_cis is not None:
@@ -176,12 +180,12 @@ class DifferentialAttention(nn.Module):
             q2, k2 = apply_rotary_emb(q2, k2, freqs_cis=freqs_cis)
 
         # Prepare for attention
-        q1 = q1.transpose(1, 2)
-        q2 = q2.transpose(1, 2)
-        k1 = repeat_kv(k1.transpose(1, 2), self.num_rep)
-        k2 = repeat_kv(k2.transpose(1, 2), self.num_rep)
-        v1 = repeat_kv(v1.transpose(1, 2), self.num_rep)
-        v2 = repeat_kv(v2.transpose(1, 2), self.num_rep)
+        q1 = q1.transpose(1, 2)  # [bsz, n_heads, seqlen, head_dim]
+        q2 = q2.transpose(1, 2)  # [bsz, n_heads, seqlen, head_dim]
+        k1 = repeat_kv(k1.transpose(1, 2), self.num_rep)  # [bsz, n_heads, seqlen, head_dim]
+        k2 = repeat_kv(k2.transpose(1, 2), self.num_rep)  # [bsz, n_heads, seqlen, head_dim]
+        v1 = repeat_kv(v1.transpose(1, 2), self.num_rep)  # [bsz, n_heads, seqlen, head_dim]
+        v2 = repeat_kv(v2.transpose(1, 2), self.num_rep)  # [bsz, n_heads, seqlen, head_dim]
 
         # Compute two separate attention operations
         attn_output1 = flex_attention(q1, k1, v1, block_mask=mask, scale=self.scale, enable_gqa=True)
@@ -195,7 +199,7 @@ class DifferentialAttention(nn.Module):
         # Combine
         attn_output = attn_output1 - lambda_full.unsqueeze(-1).unsqueeze(-1) * attn_output2
         
-        # Apply SubLN and scaling
+        # Apply norm and scaling
         attn_output = self.norm(attn_output)
         attn_output = attn_output * (1 - self.lambda_init)
 
@@ -204,7 +208,7 @@ class DifferentialAttention(nn.Module):
         output = self.wo(attn_output)
 
         return output
-
+    
     def init_weights(self, init_std: float):
         nn.init.normal_(self.lambda_q1, mean=0, std=0.1)
         nn.init.normal_(self.lambda_k1, mean=0, std=0.1)
