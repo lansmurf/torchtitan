@@ -91,6 +91,17 @@ def apply_rotary_emb(xq: torch.Tensor, xk: torch.Tensor, freqs_cis: torch.Tensor
     print(f"outputs: xq={xq_out.shape}, xk={xk_out.shape}")
     return xq_out.type_as(xq), xk_out.type_as(xk)
 
+def _precompute_freqs_cis(self):
+    """
+    The head dimension is halved for differential attention, so we need to adjust
+    the dimension for freqs_cis computation accordingly.
+    """
+    return precompute_freqs_cis(
+        self.head_dim * 2,  # Use full head dimension for freq computation
+        self.model_args.max_seq_len,
+        self.model_args.rope_theta,
+    )
+
 
 class DifferentialAttention(nn.Module):
     def __init__(self, model_args: ModelArgs):
@@ -147,10 +158,10 @@ class DifferentialAttention(nn.Module):
         print(f"v: {v.shape}")
 
         if freqs_cis is not None:
-            print(f"\nBefore rotary:")
-            print(f"input shapes - q: {q.shape}, k: {k.shape}")
+            # Take only half of the freqs_cis dimension to match our head_dim
+            freqs_cis = freqs_cis[:, :freqs_cis.size(1)//2]
+            print(f"freqs_cis after halving: {freqs_cis.shape}")
             q, k = apply_rotary_emb(q, k, freqs_cis)
-            print(f"after rotary - q: {q.shape}, k: {k.shape}")
 
         # Split for dual attention streams
         q = q.reshape(bsz, seqlen, self.n_heads, 2, self.head_dim)
