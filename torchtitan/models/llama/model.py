@@ -16,9 +16,6 @@ import torch.nn.functional as F
 from torch import nn
 from torchtitan.models.norms import build_norm
 from torch.nn.attention.flex_attention import flex_attention, BlockMask
-import lovely_tensors as lt
-
-lt.monkey_patch()
 
 @dataclass
 class ModelArgs:
@@ -40,98 +37,60 @@ class ModelArgs:
 
 
 def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0) -> torch.Tensor:
-    """Precompute the frequency tensor for complex exponentials (cis)."""
-    print(f"\nIn precompute_freqs_cis:")
-    print(f"dim: {dim}, end: {end}, theta: {theta}")
+    print(f"\nprecompute_freqs_cis input dims: dim={dim}, end={end}")
     
     freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
-    print(f"freqs after first computation: {freqs}")
+    print(f"freqs shape: {freqs.shape}")
     
     t = torch.arange(end, device=freqs.device)
-    print(f"t: {t}")
+    print(f"t shape: {t.shape}")
     
     freqs = torch.outer(t, freqs).float()
-    print(f"freqs after outer product: {freqs}")
+    print(f"freqs after outer shape: {freqs.shape}")
     
     freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
-    print(f"freqs_cis final: {freqs_cis}")
-    
+    print(f"freqs_cis final shape: {freqs_cis.shape}")
     return freqs_cis
 
 
 def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
-    """Reshape frequency tensor for broadcasting."""
-    print(f"\nIn reshape_for_broadcast:")
-    print(f"freqs_cis shape: {freqs_cis.shape}")
-    print(f"x shape: {x.shape}")
+    print(f"\nreshape_for_broadcast input shapes:")
+    print(f"freqs_cis: {freqs_cis.shape}")
+    print(f"x: {x.shape}")
     
     ndim = x.ndim
-    print(f"ndim: {ndim}")
-    assert 0 <= 1 < ndim
-    
     seqlen = x.shape[1]
-    print(f"seqlen: {seqlen}")
-    
     freqs_cis = freqs_cis[0:seqlen]
-    print(f"freqs_cis after slicing: {freqs_cis.shape}")
+    print(f"freqs_cis after slice: {freqs_cis.shape}")
+    print(f"expecting shape: ({seqlen}, {x.shape[-1]})")
     
-    print(f"Checking shapes - freqs_cis: {freqs_cis.shape}, expected: ({seqlen}, {x.shape[-1]})")
     assert freqs_cis.shape == (seqlen, x.shape[-1])
-    
     shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
-    print(f"new shape: {shape}")
-    
     result = freqs_cis.view(*shape)
     print(f"result shape: {result.shape}")
     return result
 
 
-def apply_rotary_emb(
-    xq: torch.Tensor,
-    xk: torch.Tensor,
-    freqs_cis: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Apply rotary embeddings to input tensors."""
-    print(f"\nIn apply_rotary_emb:")
-    print(f"xq: {xq}")
-    print(f"xk: {xk}")
-    print(f"freqs_cis: {freqs_cis}")
+def apply_rotary_emb(xq: torch.Tensor, xk: torch.Tensor, freqs_cis: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    print(f"\napply_rotary_emb input shapes:")
+    print(f"xq: {xq.shape}")
+    print(f"xk: {xk.shape}")
+    print(f"freqs_cis: {freqs_cis.shape}")
     
     xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
-    print(f"xq_ after complex view: {xq_}")
+    print(f"xq_ after complex: {xq_.shape}")
     
     xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
-    print(f"xk_ after complex view: {xk_}")
+    print(f"xk_ after complex: {xk_.shape}")
     
     freqs_cis = reshape_for_broadcast(freqs_cis, xq_)
-    print(f"freqs_cis after reshape: {freqs_cis}")
+    print(f"freqs_cis after reshape: {freqs_cis.shape}")
     
     xq_out = torch.view_as_real(xq_ * freqs_cis).flatten(3)
-    print(f"xq_out: {xq_out}")
-    
     xk_out = torch.view_as_real(xk_ * freqs_cis).flatten(3)
-    print(f"xk_out: {xk_out}")
-    
+    print(f"outputs: xq={xq_out.shape}, xk={xk_out.shape}")
     return xq_out.type_as(xq), xk_out.type_as(xk)
 
-
-def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
-    """Repeat key/value heads."""
-    print(f"\nIn repeat_kv:")
-    print(f"x input: {x}")
-    print(f"n_rep: {n_rep}")
-    
-    bs, slen, n_kv_heads, head_dim = x.shape
-    if n_rep == 1:
-        return x
-        
-    expanded = torch.unsqueeze(x, dim=3).expand(bs, slen, n_kv_heads, n_rep, head_dim)
-    print(f"after expand: {expanded}")
-    
-    result = expanded.reshape(bs, slen, n_kv_heads * n_rep, head_dim)
-    print(f"final result: {result}")
-    
-    return result
 
 class DifferentialAttention(nn.Module):
     def __init__(self, model_args: ModelArgs):
@@ -141,11 +100,11 @@ class DifferentialAttention(nn.Module):
         self.num_rep = self.n_heads // self.n_kv_heads
         self.head_dim = model_args.dim // model_args.n_heads // 2  # Halved head dimension
         
-        print(f"Init dimensions:")
-        print(f"n_heads: {self.n_heads}")
-        print(f"n_kv_heads: {self.n_kv_heads}")
-        print(f"num_rep: {self.num_rep}")
-        print(f"head_dim: {self.head_dim}")
+        print(f"\nDiffAttn init dims:")
+        print(f"n_heads={self.n_heads}")
+        print(f"n_kv_heads={self.n_kv_heads}")
+        print(f"num_rep={self.num_rep}")
+        print(f"head_dim={self.head_dim}")
         
         self.wq = nn.Linear(model_args.dim, model_args.dim, bias=False)
         self.wk = nn.Linear(model_args.dim, model_args.dim // self.num_rep, bias=False)
@@ -162,9 +121,10 @@ class DifferentialAttention(nn.Module):
         self.scale = self.head_dim ** -0.5
 
     def forward(self, x: torch.Tensor, mask: Optional[BlockMask] = None, freqs_cis: Optional[torch.Tensor] = None) -> torch.Tensor:
-        print("\nInput shapes:")
-        print(f"x: {x}")
-        print(f"freqs_cis: {freqs_cis}")
+        print(f"\nDiffAttn forward shapes:")
+        print(f"input x: {x.shape}")
+        if freqs_cis is not None:
+            print(f"freqs_cis: {freqs_cis.shape}")
 
         bsz, seqlen, embed_dim = x.shape
 
@@ -172,59 +132,35 @@ class DifferentialAttention(nn.Module):
         q = self.wq(x)
         k = self.wk(x)
         v = self.wv(x)
-        
-        print("\nAfter linear projections:")
-        print(f"q: {q}")
-        print(f"k: {k}")
-        print(f"v: {v}")
+        print(f"\nAfter projections:")
+        print(f"q: {q.shape}")
+        print(f"k: {k.shape}")
+        print(f"v: {v.shape}")
 
-        # Reshape with doubled heads
+        # Reshape
         q = q.view(bsz, seqlen, 2 * self.n_heads, self.head_dim)
         k = k.view(bsz, seqlen, 2 * self.n_kv_heads, self.head_dim)
         v = v.view(bsz, seqlen, self.n_kv_heads, 2 * self.head_dim)
-        
-        print("\nAfter initial reshape:")
-        print(f"q: {q}")
-        print(f"k: {k}")
-        print(f"v: {v}")
+        print(f"\nAfter initial reshape:")
+        print(f"q: {q.shape}")
+        print(f"k: {k.shape}")
+        print(f"v: {v.shape}")
 
-        # Convert to complex for rotary
         if freqs_cis is not None:
-            # First, we need to reshape q and k for rotary
-            print("\nBefore rotary embedding:")
-            print(f"freqs_cis shape: {freqs_cis.shape}")
-            print(f"q head_dim: {self.head_dim}")
-            print(f"q: {q}")
-            print(f"k: {k}")
-            
-            xq_ = torch.view_as_complex(q.float().reshape(*q.shape[:-1], -1, 2))
-            xk_ = torch.view_as_complex(k.float().reshape(*k.shape[:-1], -1, 2))
-            
-            print("\nAfter complex view:")
-            print(f"xq_: {xq_}")
-            print(f"xk_: {xk_}")
-            
-            # Let's see what we're passing to apply_rotary_emb
-            print(f"\nfreqs_cis device: {freqs_cis.device}")
-            print(f"xq_ device: {xq_.device}")
-
-            # Try applying rotary directly
-            xq_out = torch.view_as_real(xq_ * freqs_cis).flatten(3)
-            xk_out = torch.view_as_real(xk_ * freqs_cis).flatten(3)
-            q = xq_out.type_as(q)
-            k = xk_out.type_as(k)
+            print(f"\nBefore rotary:")
+            print(f"input shapes - q: {q.shape}, k: {k.shape}")
+            q, k = apply_rotary_emb(q, k, freqs_cis)
+            print(f"after rotary - q: {q.shape}, k: {k.shape}")
 
         # Split for dual attention streams
         q = q.reshape(bsz, seqlen, self.n_heads, 2, self.head_dim)
         k = k.reshape(bsz, seqlen, self.n_kv_heads, 2, self.head_dim)
         q1, q2 = q[:, :, :, 0], q[:, :, :, 1]
         k1, k2 = k[:, :, :, 0], k[:, :, :, 1]
-        
-        print("\nAfter splitting:")
-        print(f"q1: {q1}")
-        print(f"q2: {q2}")
-        print(f"k1: {k1}")
-        print(f"k2: {k2}")
+
+        print(f"\nAfter splitting:")
+        print(f"q1: {q1.shape}")
+        print(f"k1: {k1.shape}")
 
         # Prepare for attention
         q1 = q1.transpose(1, 2)
@@ -232,39 +168,27 @@ class DifferentialAttention(nn.Module):
         k1 = repeat_kv(k1.transpose(1, 2), self.num_rep)
         k2 = repeat_kv(k2.transpose(1, 2), self.num_rep)
         v = repeat_kv(v.transpose(1, 2), self.num_rep)
-        
-        print("\nBefore attention:")
-        print(f"q1: {q1}")
-        print(f"k1: {k1}")
-        print(f"v: {v}")
 
-        # Compute attentions
+        print(f"\nBefore attention:")
+        print(f"q1: {q1.shape}")
+        print(f"k1: {k1.shape}")
+        print(f"v: {v.shape}")
+
         attn1 = flex_attention(q1, k1, v, block_mask=mask, scale=self.scale, enable_gqa=True)
         attn2 = flex_attention(q2, k2, v, block_mask=mask, scale=self.scale, enable_gqa=True)
-        
-        print("\nAfter attention:")
-        print(f"attn1: {attn1}")
-        print(f"attn2: {attn2}")
 
-        # Apply differential attention
-        lambda_1 = torch.exp(torch.sum(self.lambda_q1 * self.lambda_k1, dim=-1).float()).type_as(q)
-        lambda_2 = torch.exp(torch.sum(self.lambda_q2 * self.lambda_k2, dim=-1).float()).type_as(q)
+        lambda_1 = torch.exp(torch.sum(self.lambda_q1 * self.lambda_k1, dim=-1).float())
+        lambda_2 = torch.exp(torch.sum(self.lambda_q2 * self.lambda_k2, dim=-1).float())
         lambda_full = lambda_1 - lambda_2 + self.lambda_init[0]
         
-        print(f"\nlambda_full: {lambda_full}")
-        
         attn = attn1 - lambda_full * attn2
-        
         attn = self.subln(attn)
         attn = attn * (1 - self.lambda_init[0])
-        
-        print(f"\nFinal attn: {attn}")
         
         attn = attn.transpose(1, 2).reshape(bsz, seqlen, self.n_heads * 2 * self.head_dim)
         output = self.wo(attn)
         
-        print(f"\nOutput: {output}")
-
+        print(f"\nOutput: {output.shape}")
         return output
 
     def init_weights(self, init_std: float):
