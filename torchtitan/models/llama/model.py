@@ -117,7 +117,7 @@ class DifferentialAttention(nn.Module):
         self.lambda_k2 = nn.Parameter(torch.zeros(self.head_dim, dtype=torch.float32).normal_(mean=0, std=0.1))
         self.lambda_init = nn.Parameter(torch.tensor([0.8]))
 
-        self.subln = build_norm(model_args.norm_type, 2 * self.head_dim, eps=model_args.norm_eps, elementwise_affine=False)
+        self.subln = build_norm(model_args.norm_type, 2 * self.head_dim, eps=model_args.norm_eps)
         self.scale = self.head_dim ** -0.5
 
     def forward(self, x: torch.Tensor, mask: Optional[BlockMask] = None, freqs_cis: Optional[torch.Tensor] = None) -> torch.Tensor:
