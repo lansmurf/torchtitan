@@ -148,7 +148,7 @@ class DifferentialAttention(nn.Module):
         self.lambda_init = nn.Parameter(torch.tensor([0.8]))  # Keep as 1D tensor for FSDP
 
         # Sublayer norm without affine parameters
-        self.subln = build_norm(model_args.norm_type, 2 * self.head_dim, eps=model_args.norm_eps)
+        self.subln = build_norm(model_args.norm_type, 2 * self.head_dim, eps=model_args.norm_eps, elementwise_affine=False)
         self.scale = self.head_dim ** -0.5
 
     def forward(self, x: torch.Tensor, mask: Optional[BlockMask] = None, freqs_cis: Optional[torch.Tensor] = None) -> torch.Tensor:
@@ -164,16 +164,16 @@ class DifferentialAttention(nn.Module):
         k = k.view(bsz, seqlen, 2 * self.n_kv_heads, self.head_dim)
         v = v.view(bsz, seqlen, self.n_kv_heads, 2 * self.head_dim)  # Combined v dimension
 
-        # Apply rotary embeddings if provided
-        if freqs_cis is not None:
-            q = apply_rotary_emb(q, freqs_cis)
-            k = apply_rotary_emb(k, freqs_cis)
-
         # Split queries and keys, keep values combined
         q = q.reshape(bsz, seqlen, self.n_heads, 2, self.head_dim)
         k = k.reshape(bsz, seqlen, self.n_kv_heads, 2, self.head_dim)
         q1, q2 = q[:, :, :, 0], q[:, :, :, 1]  # First and second query sets
         k1, k2 = k[:, :, :, 0], k[:, :, :, 1]  # First and second key sets
+
+        # Apply rotary embeddings if provided - separate application for each split
+        if freqs_cis is not None:
+            q1, k1 = apply_rotary_emb(q1, k1, freqs_cis)
+            q2, k2 = apply_rotary_emb(q2, k2, freqs_cis)
 
         # Prepare for attention
         q1 = q1.transpose(1, 2)  # [bsz, n_heads, seqlen, head_dim]
