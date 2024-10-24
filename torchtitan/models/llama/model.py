@@ -206,6 +206,12 @@ class DifferentialAttention(nn.Module):
 
         return output
 
+    def init_weights(self, init_std: float):
+            # Initialize projections
+            for linear in (self.wq, self.wk, self.wv):
+                nn.init.trunc_normal_(linear.weight, mean=0.0, std=0.02)
+            nn.init.trunc_normal_(self.wo.weight, mean=0.0, std=init_std)
+
 class Attention(nn.Module):
     """
     Multi-head attention module.
