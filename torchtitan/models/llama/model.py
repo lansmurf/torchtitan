@@ -167,13 +167,21 @@ class DifferentialAttention(nn.Module):
         # Split queries and keys, keep values combined
         q = q.reshape(bsz, seqlen, self.n_heads, 2, self.head_dim)
         k = k.reshape(bsz, seqlen, self.n_kv_heads, 2, self.head_dim)
+
+        # Apply rotary embeddings if provided
+        # Important: reshape q and k to match the expected input shape for rotary embeddings
+        if freqs_cis is not None:
+            # Adjust the expected head_dim for rotary embedding
+            q_rot = q.reshape(bsz, seqlen, -1, self.head_dim)  # Combine n_heads and 2
+            k_rot = k.reshape(bsz, seqlen, -1, self.head_dim)  # Combine n_kv_heads and 2
+            q_rot, k_rot = apply_rotary_emb(q_rot, k_rot, freqs_cis)
+            # Reshape back
+            q = q_rot.reshape(bsz, seqlen, self.n_heads, 2, self.head_dim)
+            k = k_rot.reshape(bsz, seqlen, self.n_kv_heads, 2, self.head_dim)
+
+        # Split after rotation
         q1, q2 = q[:, :, :, 0], q[:, :, :, 1]  # First and second query sets
         k1, k2 = k[:, :, :, 0], k[:, :, :, 1]  # First and second key sets
-
-        # Apply rotary embeddings if provided - separate application for each split
-        if freqs_cis is not None:
-            q1, k1 = apply_rotary_emb(q1, k1, freqs_cis)
-            q2, k2 = apply_rotary_emb(q2, k2, freqs_cis)
 
         # Prepare for attention
         q1 = q1.transpose(1, 2)  # [bsz, n_heads, seqlen, head_dim]
