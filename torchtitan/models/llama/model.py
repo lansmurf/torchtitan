@@ -144,7 +144,7 @@ class DifferentialAttention(nn.Module):
         self.lambda_k1 = nn.Parameter(torch.zeros(self.head_dim))
         self.lambda_q2 = nn.Parameter(torch.zeros(self.head_dim))
         self.lambda_k2 = nn.Parameter(torch.zeros(self.head_dim))
-        self.lambda_init = nn.Parameter(torch.tensor(0.8))
+        self.lambda_init = nn.Parameter(torch.tensor([0.8]))
 
         self.norm = nn.LayerNorm(model_args.dim, eps=model_args.norm_eps)
         
@@ -194,14 +194,14 @@ class DifferentialAttention(nn.Module):
         # Apply diff attention
         lambda_1 = torch.exp(torch.sum(self.lambda_q1 * self.lambda_k1, dim=-1).float()).type_as(q)
         lambda_2 = torch.exp(torch.sum(self.lambda_q2 * self.lambda_k2, dim=-1).float()).type_as(q)
-        lambda_full = lambda_1 - lambda_2 + self.lambda_init
+        lambda_full = lambda_1 - lambda_2 + self.lambda_init[0]
         
         # Combine
         attn_output = attn_output1 - lambda_full.unsqueeze(-1).unsqueeze(-1) * attn_output2
         
         # Apply norm and scaling
         attn_output = self.norm(attn_output)
-        attn_output = attn_output * (1 - self.lambda_init)
+        attn_output = attn_output * (1 - self.lambda_init[0])
 
         # Reshape and project output
         attn_output = attn_output.transpose(1, 2).reshape(bsz, seqlen, self.n_heads * self.head_dim)
