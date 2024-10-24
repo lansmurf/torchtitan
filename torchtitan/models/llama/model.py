@@ -160,26 +160,20 @@ class DifferentialAttention(nn.Module):
         v = self.wv(x)  # [bsz, seqlen, embed_dim//2]
 
         # Reshape with doubled heads
-        q = q.view(bsz, seqlen, 2 * self.n_heads, self.head_dim)
-        k = k.view(bsz, seqlen, 2 * self.n_kv_heads, self.head_dim)
-        v = v.view(bsz, seqlen, self.n_kv_heads, 2 * self.head_dim)  # Combined v dimension
+        q = q.view(bsz, seqlen, 2 * self.n_heads, self.head_dim)  # [bsz, seqlen, 2*n_heads, head_dim]
+        k = k.view(bsz, seqlen, 2 * self.n_kv_heads, self.head_dim)  # [bsz, seqlen, 2*n_kv_heads, head_dim]
+        v = v.view(bsz, seqlen, self.n_kv_heads, 2 * self.head_dim)  # [bsz, seqlen, n_kv_heads, 2*head_dim]
+        
+        # Apply rotary embeddings if provided
+        if freqs_cis is not None:
+            # Use first half of freqs_cis for our head_dim
+            freqs_cis = freqs_cis[:, :self.head_dim]
+            q = apply_rotary_emb(q, k, freqs_cis)
+            k = apply_rotary_emb(k, k, freqs_cis)  # Apply same rotation to keys
 
-        # Split queries and keys, keep values combined
+        # Split for dual attention streams
         q = q.reshape(bsz, seqlen, self.n_heads, 2, self.head_dim)
         k = k.reshape(bsz, seqlen, self.n_kv_heads, 2, self.head_dim)
-
-        # Apply rotary embeddings if provided
-        # Important: reshape q and k to match the expected input shape for rotary embeddings
-        if freqs_cis is not None:
-            # Adjust the expected head_dim for rotary embedding
-            q_rot = q.reshape(bsz, seqlen, -1, self.head_dim)  # Combine n_heads and 2
-            k_rot = k.reshape(bsz, seqlen, -1, self.head_dim)  # Combine n_kv_heads and 2
-            q_rot, k_rot = apply_rotary_emb(q_rot, k_rot, freqs_cis)
-            # Reshape back
-            q = q_rot.reshape(bsz, seqlen, self.n_heads, 2, self.head_dim)
-            k = k_rot.reshape(bsz, seqlen, self.n_kv_heads, 2, self.head_dim)
-
-        # Split after rotation
         q1, q2 = q[:, :, :, 0], q[:, :, :, 1]  # First and second query sets
         k1, k2 = k[:, :, :, 0], k[:, :, :, 1]  # First and second key sets
 
@@ -211,12 +205,6 @@ class DifferentialAttention(nn.Module):
         output = self.wo(attn)
 
         return output
-
-    def init_weights(self, init_std: float):
-        # Initialize projections
-        for linear in (self.wq, self.wk, self.wv):
-            nn.init.trunc_normal_(linear.weight, mean=0.0, std=0.02)
-        nn.init.trunc_normal_(self.wo.weight, mean=0.0, std=init_std)
 
 class Attention(nn.Module):
     """
