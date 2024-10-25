@@ -18,7 +18,7 @@ from torch.distributed._tensor import Partial, Replicate, Shard
 from torch.distributed._tensor.experimental import local_map
 
 
-def build_norm(norm_type: str, dim: int, eps: float = 1e-6):
+def build_norm(norm_type: str, dim: int, eps: float = 1e-6, elementwise_affine: bool = True):
     """
     Builds the specified normalization layer based on the norm_type.
 
@@ -27,6 +27,7 @@ def build_norm(norm_type: str, dim: int, eps: float = 1e-6):
             Supported types: layernorm, np_layernorm, rmsnorm, fused_rmsnorm
         dim (int): The dimension of the normalization layer.
         eps (float, optional): The epsilon value for numerical stability. Defaults to 1e-6.
+        elementwise_affine (bool, optional): If True, learnable affine parameters are used. Defaults to True.
 
     Returns:
         The built normalization layer.
@@ -37,13 +38,13 @@ def build_norm(norm_type: str, dim: int, eps: float = 1e-6):
     norm_type = norm_type.lower()  # Normalize to lowercase
 
     if norm_type == "layernorm":
-        return nn.LayerNorm(dim, eps=eps, bias=False)
+        return nn.LayerNorm(dim, eps=eps, elementwise_affine=elementwise_affine)
     elif norm_type == "np_layernorm":
-        return nn.LayerNorm(dim, eps=eps, elementwise_affine=False, bias=False)
+        return nn.LayerNorm(dim, eps=eps, elementwise_affine=False)
     elif norm_type == "rmsnorm":
-        return RMSNorm(dim, eps=eps)
+        return RMSNorm(dim, eps=eps, elementwise_affine=elementwise_affine)
     elif norm_type == "fused_rmsnorm":
-        return FusedRMSNorm(dim, eps=eps)
+        return FusedRMSNorm(dim, eps=eps, elementwise_affine=elementwise_affine)
     else:
         raise NotImplementedError(f"Unknown norm_type: '{norm_type}'")
 
