@@ -137,6 +137,7 @@ class DifferentialAttention(nn.Module):
         self.n_kv_heads = model_args.n_kv_heads if model_args.n_kv_heads is not None else model_args.n_heads
         self.num_rep = self.n_heads // self.n_kv_heads
         self.head_dim = model_args.dim // model_args.n_heads // 2  # Halved head dimension
+        self.scale = self.head_dim ** -0.5
         
         print(f"\nDiffAttn init dims:")
         print(f"n_heads={self.n_heads}")
@@ -146,7 +147,7 @@ class DifferentialAttention(nn.Module):
         
         self.wq = nn.Linear(model_args.dim, model_args.dim, bias=False)  # Full dim for 2 sets of queries
         self.wk = nn.Linear(model_args.dim, model_args.dim // self.num_rep, bias=False)  # Half dim for keys
-        self.wv = nn.Linear(model_args.dim, model_args.dim // (2 * self.num_rep), bias=False)  # Quarter dim for values
+        self.wv = nn.Linear(model_args.dim, model_args.dim // self.num_rep, bias=False)  # Half dim for values
         self.wo = nn.Linear(model_args.dim, model_args.dim, bias=False)
 
         self.lambda_q1 = nn.Parameter(torch.zeros(self.head_dim, dtype=torch.float32).normal_(mean=0, std=0.1))
@@ -155,79 +156,105 @@ class DifferentialAttention(nn.Module):
         self.lambda_k2 = nn.Parameter(torch.zeros(self.head_dim, dtype=torch.float32).normal_(mean=0, std=0.1))
         self.lambda_init = nn.Parameter(torch.tensor([0.8]))
 
-        self.subln = build_norm(model_args.norm_type, self.head_dim, eps=model_args.norm_eps)
-        self.scale = self.head_dim ** -0.5
+        self.subln = build_norm(model_args.norm_type, 2 * self.head_dim, eps=model_args.norm_eps)
 
-    def forward(self, x: torch.Tensor, mask: Optional[BlockMask] = None, freqs_cis: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, mask: Optional[BlockMask], freqs_cis: Optional[torch.Tensor]) -> torch.Tensor:
         print(f"\nDiffAttn forward shapes:")
         print(f"input x: {x.shape}")
         if freqs_cis is not None:
             print(f"freqs_cis: {freqs_cis.shape}")
-
+            
         bsz, seqlen, embed_dim = x.shape
 
         # Linear projections
         q = self.wq(x)  # [bsz, seqlen, embed_dim]
         k = self.wk(x)  # [bsz, seqlen, embed_dim//2]
-        v = self.wv(x)  # [bsz, seqlen, embed_dim//4]
+        v = self.wv(x)  # [bsz, seqlen, embed_dim//2]
+        
         print(f"\nAfter projections:")
         print(f"q: {q.shape}")
         print(f"k: {k.shape}")
         print(f"v: {v.shape}")
 
-        # Reshape
+        # Reshape with explicit dimensions
         q = q.view(bsz, seqlen, 2 * self.n_heads, self.head_dim)
         k = k.view(bsz, seqlen, 2 * self.n_kv_heads, self.head_dim)
-        v = v.view(bsz, seqlen, self.n_kv_heads, self.head_dim)  # Now matches q/k head_dim
+        v = v.view(bsz, seqlen, self.n_kv_heads, 2 * self.head_dim)  # Note: doubled head_dim for v
+        
         print(f"\nAfter initial reshape:")
         print(f"q: {q.shape}")
         print(f"k: {k.shape}")
         print(f"v: {v.shape}")
 
+        # Apply rotary embeddings if provided
         if freqs_cis is not None:
             freqs_cis = freqs_cis[:, :freqs_cis.size(1)//2]
             print(f"freqs_cis after halving: {freqs_cis.shape}")
             q, k = apply_rotary_emb(q, k, freqs_cis)
+            print(f"After rotary:")
+            print(f"q: {q.shape}")
+            print(f"k: {k.shape}")
 
-        # Split for dual attention streams
+        # Split queries and keys for dual attention streams
         q = q.reshape(bsz, seqlen, self.n_heads, 2, self.head_dim)
         k = k.reshape(bsz, seqlen, self.n_kv_heads, 2, self.head_dim)
-        q1, q2 = q[:, :, :, 0], q[:, :, :, 1]
-        k1, k2 = k[:, :, :, 0], k[:, :, :, 1]
-
+        q1, q2 = q[:, :, :, 0], q[:, :, :, 1]  # [bsz, seqlen, n_heads, head_dim]
+        k1, k2 = k[:, :, :, 0], k[:, :, :, 1]  # [bsz, seqlen, n_kv_heads, head_dim]
+        
         print(f"\nAfter splitting:")
         print(f"q1: {q1.shape}")
+        print(f"q2: {q2.shape}")
         print(f"k1: {k1.shape}")
+        print(f"k2: {k2.shape}")
 
         # Prepare for attention
         q1 = q1.transpose(1, 2)  # [bsz, n_heads, seqlen, head_dim]
         q2 = q2.transpose(1, 2)
-        k1 = repeat_kv(k1.transpose(1, 2), self.num_rep)
+        k1 = repeat_kv(k1.transpose(1, 2), self.num_rep)  # [bsz, n_heads, seqlen, head_dim]
         k2 = repeat_kv(k2.transpose(1, 2), self.num_rep)
-        v = repeat_kv(v.transpose(1, 2), self.num_rep)
-
+        v = repeat_kv(v.transpose(1, 2), self.num_rep)  # [bsz, n_heads, seqlen, 2*head_dim]
+        
         print(f"\nBefore attention:")
         print(f"q1: {q1.shape}")
+        print(f"q2: {q2.shape}")
         print(f"k1: {k1.shape}")
+        print(f"k2: {k2.shape}")
         print(f"v: {v.shape}")
 
         # Compute attentions
         attn1 = flex_attention(q1, k1, v, block_mask=mask, scale=self.scale, enable_gqa=True)
         attn2 = flex_attention(q2, k2, v, block_mask=mask, scale=self.scale, enable_gqa=True)
+        
+        print(f"\nAfter attention:")
+        print(f"attn1: {attn1.shape}")
+        print(f"attn2: {attn2.shape}")
 
         # Apply differential attention
         lambda_1 = torch.exp(torch.sum(self.lambda_q1 * self.lambda_k1, dim=-1).float())
         lambda_2 = torch.exp(torch.sum(self.lambda_q2 * self.lambda_k2, dim=-1).float())
         lambda_full = lambda_1 - lambda_2 + self.lambda_init[0]
         
-        attn = attn1 - lambda_full * attn2
+        attn = attn1 - lambda_full * attn2  # [bsz, n_heads, seqlen, 2*head_dim]
+        print(f"\nAfter differential:")
+        print(f"attn: {attn.shape}")
+        
+        # Apply subln and scaling
         attn = self.subln(attn)
         attn = attn * (1 - self.lambda_init[0])
         
-        attn = attn.transpose(1, 2).reshape(bsz, seqlen, self.n_heads * 2 * self.head_dim)
-        output = self.wo(attn)
+        # Reshape to final dimensions
+        attn = attn.transpose(1, 2)  # [bsz, seqlen, n_heads, 2*head_dim]
+        print(f"\nAfter transpose:")
+        print(f"attn: {attn.shape}")
         
-        print(f"\nOutput: {output.shape}")
+        attn = attn.reshape(bsz, seqlen, self.n_heads * 2 * self.head_dim)
+        print(f"\nAfter final reshape:")
+        print(f"attn: {attn.shape}")
+        
+        output = self.wo(attn)
+        print(f"\nFinal output:")
+        print(f"output: {output.shape}")
+        
         return output
 
     def init_weights(self, init_std: float):
