@@ -176,10 +176,10 @@ class DifferentialAttention(nn.Module):
         print(f"k: {k.shape}")
         print(f"v: {v.shape}")
 
-        # Reshape with explicit dimensions
+        # Initial reshape
         q = q.view(bsz, seqlen, 2 * self.n_heads, self.head_dim)
         k = k.view(bsz, seqlen, 2 * self.n_kv_heads, self.head_dim)
-        v = v.view(bsz, seqlen, self.n_kv_heads, 2 * self.head_dim)  # Note: doubled head_dim for v
+        v = v.view(bsz, seqlen, self.n_kv_heads, 2 * self.head_dim)
         
         print(f"\nAfter initial reshape:")
         print(f"q: {q.shape}")
@@ -191,9 +191,6 @@ class DifferentialAttention(nn.Module):
             freqs_cis = freqs_cis[:, :freqs_cis.size(1)//2]
             print(f"freqs_cis after halving: {freqs_cis.shape}")
             q, k = apply_rotary_emb(q, k, freqs_cis)
-            print(f"After rotary:")
-            print(f"q: {q.shape}")
-            print(f"k: {k.shape}")
 
         # Split queries and keys for dual attention streams
         q = q.reshape(bsz, seqlen, self.n_heads, 2, self.head_dim)
@@ -201,31 +198,36 @@ class DifferentialAttention(nn.Module):
         q1, q2 = q[:, :, :, 0], q[:, :, :, 1]  # [bsz, seqlen, n_heads, head_dim]
         k1, k2 = k[:, :, :, 0], k[:, :, :, 1]  # [bsz, seqlen, n_kv_heads, head_dim]
         
+        # Split value tensor for dual stream attention
+        v1, v2 = v.chunk(2, dim=-1)  # Each has shape [bsz, seqlen, n_kv_heads, head_dim]
+        
         print(f"\nAfter splitting:")
-        print(f"q1: {q1.shape}")
-        print(f"q2: {q2.shape}")
-        print(f"k1: {k1.shape}")
-        print(f"k2: {k2.shape}")
+        print(f"q1: {q1.shape}, q2: {q2.shape}")
+        print(f"k1: {k1.shape}, k2: {k2.shape}")
+        print(f"v1: {v1.shape}, v2: {v2.shape}")
 
         # Prepare for attention
         q1 = q1.transpose(1, 2)  # [bsz, n_heads, seqlen, head_dim]
         q2 = q2.transpose(1, 2)
-        k1 = repeat_kv(k1.transpose(1, 2), self.num_rep)  # [bsz, n_heads, seqlen, head_dim]
+        k1 = repeat_kv(k1.transpose(1, 2), self.num_rep)
         k2 = repeat_kv(k2.transpose(1, 2), self.num_rep)
-        v = repeat_kv(v.transpose(1, 2), self.num_rep)  # [bsz, n_heads, seqlen, 2*head_dim]
+        v1 = repeat_kv(v1.transpose(1, 2), self.num_rep)
+        v2 = repeat_kv(v2.transpose(1, 2), self.num_rep)
         
-        print(f"\nBefore attention:")
-        print(f"q1: {q1.shape}")
-        print(f"q2: {q2.shape}")
-        print(f"k1: {k1.shape}")
-        print(f"k2: {k2.shape}")
-        print(f"v: {v.shape}")
+        print("\nBefore attention:")
+        print(f"q1: {q1.shape}, k1: {k1.shape}, v1: {v1.shape}")
+        print(f"q2: {q2.shape}, k2: {k2.shape}, v2: {v2.shape}")
 
-        # Compute attentions
-        attn1 = flex_attention(q1, k1, v, block_mask=mask, scale=self.scale, enable_gqa=True)
-        attn2 = flex_attention(q2, k2, v, block_mask=mask, scale=self.scale, enable_gqa=True)
+        # Compute attentions separately for each half
+        attn1_first = flex_attention(q1, k1, v1, block_mask=mask, scale=self.scale)
+        attn1_second = flex_attention(q1, k1, v2, block_mask=mask, scale=self.scale)
+        attn1 = torch.cat([attn1_first, attn1_second], dim=-1)
         
-        print(f"\nAfter attention:")
+        attn2_first = flex_attention(q2, k2, v1, block_mask=mask, scale=self.scale) 
+        attn2_second = flex_attention(q2, k2, v2, block_mask=mask, scale=self.scale)
+        attn2 = torch.cat([attn2_first, attn2_second], dim=-1)
+        
+        print(f"\nAfter attention and concat:")
         print(f"attn1: {attn1.shape}")
         print(f"attn2: {attn2.shape}")
 
@@ -235,8 +237,6 @@ class DifferentialAttention(nn.Module):
         lambda_full = lambda_1 - lambda_2 + self.lambda_init[0]
         
         attn = attn1 - lambda_full * attn2  # [bsz, n_heads, seqlen, 2*head_dim]
-        print(f"\nAfter differential:")
-        print(f"attn: {attn.shape}")
         
         # Apply subln and scaling
         attn = self.subln(attn)
@@ -244,18 +244,12 @@ class DifferentialAttention(nn.Module):
         
         # Reshape to final dimensions
         attn = attn.transpose(1, 2)  # [bsz, seqlen, n_heads, 2*head_dim]
-        print(f"\nAfter transpose:")
-        print(f"attn: {attn.shape}")
-        
         attn = attn.reshape(bsz, seqlen, self.n_heads * 2 * self.head_dim)
-        print(f"\nAfter final reshape:")
+        
+        print(f"\nFinal output:")
         print(f"attn: {attn.shape}")
         
-        output = self.wo(attn)
-        print(f"\nFinal output:")
-        print(f"output: {output.shape}")
-        
-        return output
+        return self.wo(attn)
 
     def init_weights(self, init_std: float):
             # Initialize projections
