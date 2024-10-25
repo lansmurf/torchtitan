@@ -144,9 +144,9 @@ class DifferentialAttention(nn.Module):
         print(f"num_rep={self.num_rep}")
         print(f"head_dim={self.head_dim}")
         
-        self.wq = nn.Linear(model_args.dim, model_args.dim, bias=False)
-        self.wk = nn.Linear(model_args.dim, model_args.dim // self.num_rep, bias=False)
-        self.wv = nn.Linear(model_args.dim, model_args.dim // self.num_rep, bias=False)
+        self.wq = nn.Linear(model_args.dim, model_args.dim, bias=False)  # Full dim for 2 sets of queries
+        self.wk = nn.Linear(model_args.dim, model_args.dim // self.num_rep, bias=False)  # Half dim for keys
+        self.wv = nn.Linear(model_args.dim, model_args.dim // (2 * self.num_rep), bias=False)  # Quarter dim for values
         self.wo = nn.Linear(model_args.dim, model_args.dim, bias=False)
 
         self.lambda_q1 = nn.Parameter(torch.zeros(self.head_dim, dtype=torch.float32).normal_(mean=0, std=0.1))
@@ -167,9 +167,9 @@ class DifferentialAttention(nn.Module):
         bsz, seqlen, embed_dim = x.shape
 
         # Linear projections
-        q = self.wq(x)
-        k = self.wk(x)
-        v = self.wv(x)
+        q = self.wq(x)  # [bsz, seqlen, embed_dim]
+        k = self.wk(x)  # [bsz, seqlen, embed_dim//2]
+        v = self.wv(x)  # [bsz, seqlen, embed_dim//4]
         print(f"\nAfter projections:")
         print(f"q: {q.shape}")
         print(f"k: {k.shape}")
@@ -178,14 +178,13 @@ class DifferentialAttention(nn.Module):
         # Reshape
         q = q.view(bsz, seqlen, 2 * self.n_heads, self.head_dim)
         k = k.view(bsz, seqlen, 2 * self.n_kv_heads, self.head_dim)
-        v = v.view(bsz, seqlen, self.n_kv_heads, 2 * self.head_dim)
+        v = v.view(bsz, seqlen, self.n_kv_heads, self.head_dim)  # Now matches q/k head_dim
         print(f"\nAfter initial reshape:")
         print(f"q: {q.shape}")
         print(f"k: {k.shape}")
         print(f"v: {v.shape}")
 
         if freqs_cis is not None:
-            # Take only half of the freqs_cis dimension to match our head_dim
             freqs_cis = freqs_cis[:, :freqs_cis.size(1)//2]
             print(f"freqs_cis after halving: {freqs_cis.shape}")
             q, k = apply_rotary_emb(q, k, freqs_cis)
@@ -201,7 +200,7 @@ class DifferentialAttention(nn.Module):
         print(f"k1: {k1.shape}")
 
         # Prepare for attention
-        q1 = q1.transpose(1, 2)
+        q1 = q1.transpose(1, 2)  # [bsz, n_heads, seqlen, head_dim]
         q2 = q2.transpose(1, 2)
         k1 = repeat_kv(k1.transpose(1, 2), self.num_rep)
         k2 = repeat_kv(k2.transpose(1, 2), self.num_rep)
@@ -212,9 +211,11 @@ class DifferentialAttention(nn.Module):
         print(f"k1: {k1.shape}")
         print(f"v: {v.shape}")
 
+        # Compute attentions
         attn1 = flex_attention(q1, k1, v, block_mask=mask, scale=self.scale, enable_gqa=True)
         attn2 = flex_attention(q2, k2, v, block_mask=mask, scale=self.scale, enable_gqa=True)
 
+        # Apply differential attention
         lambda_1 = torch.exp(torch.sum(self.lambda_q1 * self.lambda_k1, dim=-1).float())
         lambda_2 = torch.exp(torch.sum(self.lambda_q2 * self.lambda_k2, dim=-1).float())
         lambda_full = lambda_1 - lambda_2 + self.lambda_init[0]
