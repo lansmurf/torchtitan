@@ -138,17 +138,13 @@ class DifferentialAttention(nn.Module):
         self.num_rep = self.n_heads // self.n_kv_heads
         self.head_dim = model_args.dim // model_args.n_heads // 2  # Halved head dimension
         
-        print(f"\nDiffAttn init dims:")
-        print(f"n_heads={self.n_heads}")
-        print(f"n_kv_heads={self.n_kv_heads}")
-        print(f"num_rep={self.num_rep}")
-        print(f"head_dim={self.head_dim}")
-        
-        self.wq = nn.Linear(model_args.dim, model_args.dim, bias=False)  # Full dim for 2 sets of queries
+        # Project to dimensions that maintain proper size
+        self.wq = nn.Linear(model_args.dim, model_args.dim, bias=False)  # Full dim for queries
         self.wk = nn.Linear(model_args.dim, model_args.dim // self.num_rep, bias=False)  # Half dim for keys
         self.wv = nn.Linear(model_args.dim, model_args.dim // (2 * self.num_rep), bias=False)  # Quarter dim for values
         self.wo = nn.Linear(model_args.dim, model_args.dim, bias=False)
 
+        # Lambda parameters
         self.lambda_q1 = nn.Parameter(torch.zeros(self.head_dim, dtype=torch.float32).normal_(mean=0, std=0.1))
         self.lambda_k1 = nn.Parameter(torch.zeros(self.head_dim, dtype=torch.float32).normal_(mean=0, std=0.1))
         self.lambda_q2 = nn.Parameter(torch.zeros(self.head_dim, dtype=torch.float32).normal_(mean=0, std=0.1))
@@ -159,34 +155,23 @@ class DifferentialAttention(nn.Module):
         self.scale = self.head_dim ** -0.5
 
     def forward(self, x: torch.Tensor, mask: Optional[BlockMask] = None, freqs_cis: Optional[torch.Tensor] = None) -> torch.Tensor:
-        print(f"\nDiffAttn forward shapes:")
-        print(f"input x: {x.shape}")
-        if freqs_cis is not None:
-            print(f"freqs_cis: {freqs_cis.shape}")
-
         bsz, seqlen, embed_dim = x.shape
+        print(f"\nInput shapes: x={x.shape}")
 
         # Linear projections
-        q = self.wq(x)  # [bsz, seqlen, embed_dim]
-        k = self.wk(x)  # [bsz, seqlen, embed_dim//2]
-        v = self.wv(x)  # [bsz, seqlen, embed_dim//4]
-        print(f"\nAfter projections:")
-        print(f"q: {q.shape}")
-        print(f"k: {k.shape}")
-        print(f"v: {v.shape}")
+        q = self.wq(x)  # [bsz, seqlen, dim]
+        k = self.wk(x)  # [bsz, seqlen, dim//2]
+        v = self.wv(x)  # [bsz, seqlen, dim//4]
+        print(f"After projections: q={q.shape}, k={k.shape}, v={v.shape}")
 
-        # Reshape
+        # Reshape for attention
         q = q.view(bsz, seqlen, 2 * self.n_heads, self.head_dim)
         k = k.view(bsz, seqlen, 2 * self.n_kv_heads, self.head_dim)
-        v = v.view(bsz, seqlen, self.n_kv_heads, self.head_dim)  # Now matches q/k head_dim
-        print(f"\nAfter initial reshape:")
-        print(f"q: {q.shape}")
-        print(f"k: {k.shape}")
-        print(f"v: {v.shape}")
+        v = v.view(bsz, seqlen, self.n_kv_heads, self.head_dim)
+        print(f"After reshape: q={q.shape}, k={k.shape}, v={v.shape}")
 
         if freqs_cis is not None:
             freqs_cis = freqs_cis[:, :freqs_cis.size(1)//2]
-            print(f"freqs_cis after halving: {freqs_cis.shape}")
             q, k = apply_rotary_emb(q, k, freqs_cis)
 
         # Split for dual attention streams
@@ -195,10 +180,6 @@ class DifferentialAttention(nn.Module):
         q1, q2 = q[:, :, :, 0], q[:, :, :, 1]
         k1, k2 = k[:, :, :, 0], k[:, :, :, 1]
 
-        print(f"\nAfter splitting:")
-        print(f"q1: {q1.shape}")
-        print(f"k1: {k1.shape}")
-
         # Prepare for attention
         q1 = q1.transpose(1, 2)  # [bsz, n_heads, seqlen, head_dim]
         q2 = q2.transpose(1, 2)
@@ -206,14 +187,12 @@ class DifferentialAttention(nn.Module):
         k2 = repeat_kv(k2.transpose(1, 2), self.num_rep)
         v = repeat_kv(v.transpose(1, 2), self.num_rep)
 
-        print(f"\nBefore attention:")
-        print(f"q1: {q1.shape}")
-        print(f"k1: {k1.shape}")
-        print(f"v: {v.shape}")
+        print(f"Before attention: q1={q1.shape}, k1={k1.shape}, v={v.shape}")
 
         # Compute attentions
         attn1 = flex_attention(q1, k1, v, block_mask=mask, scale=self.scale, enable_gqa=True)
         attn2 = flex_attention(q2, k2, v, block_mask=mask, scale=self.scale, enable_gqa=True)
+        print(f"After attention: attn1={attn1.shape}, attn2={attn2.shape}")
 
         # Apply differential attention
         lambda_1 = torch.exp(torch.sum(self.lambda_q1 * self.lambda_k1, dim=-1).float())
@@ -221,13 +200,20 @@ class DifferentialAttention(nn.Module):
         lambda_full = lambda_1 - lambda_2 + self.lambda_init[0]
         
         attn = attn1 - lambda_full * attn2
+        print(f"After combining attentions: attn={attn.shape}")
+        
         attn = self.subln(attn)
         attn = attn * (1 - self.lambda_init[0])
         
-        attn = attn.transpose(1, 2).reshape(bsz, seqlen, self.n_heads * 2 * self.head_dim)
+        # Final reshape - going from [bsz, n_heads, seqlen, head_dim] to [bsz, seqlen, dim]
+        print(f"Before final transpose: attn={attn.shape}")
+        attn = attn.transpose(1, 2)  # [bsz, seqlen, n_heads, head_dim]
+        print(f"After transpose: attn={attn.shape}")
+        attn = attn.reshape(bsz, seqlen, self.n_heads * self.head_dim)
+        print(f"After reshape: attn={attn.shape}")
         output = self.wo(attn)
-        
-        print(f"\nOutput: {output.shape}")
+        print(f"Final output: output={output.shape}")
+
         return output
 
     def init_weights(self, init_std: float):
