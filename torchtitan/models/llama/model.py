@@ -53,41 +53,41 @@ def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0) -> torch.Te
 
 
 def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
-    print(f"\nreshape_for_broadcast input shapes:")
-    print(f"freqs_cis: {freqs_cis.shape}")
-    print(f"x: {x.shape}")
+    #print(f"\nreshape_for_broadcast input shapes:")
+    #print(f"freqs_cis: {freqs_cis.shape}")
+    #print(f"x: {x.shape}")
     
     ndim = x.ndim
     seqlen = x.shape[1]
     freqs_cis = freqs_cis[0:seqlen]
-    print(f"freqs_cis after slice: {freqs_cis.shape}")
-    print(f"expecting shape: ({seqlen}, {x.shape[-1]})")
+    #print(f"freqs_cis after slice: {freqs_cis.shape}")
+    #print(f"expecting shape: ({seqlen}, {x.shape[-1]})")
     
     assert freqs_cis.shape == (seqlen, x.shape[-1])
     shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
     result = freqs_cis.view(*shape)
-    print(f"result shape: {result.shape}")
+    #print(f"result shape: {result.shape}")
     return result
 
 
 def apply_rotary_emb(xq: torch.Tensor, xk: torch.Tensor, freqs_cis: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-    print(f"\napply_rotary_emb input shapes:")
-    print(f"xq: {xq.shape}")
-    print(f"xk: {xk.shape}")
-    print(f"freqs_cis: {freqs_cis.shape}")
+    #print(f"\napply_rotary_emb input shapes:")
+    #print(f"xq: {xq.shape}")
+    #print(f"xk: {xk.shape}")
+    #print(f"freqs_cis: {freqs_cis.shape}")
     
     xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
-    print(f"xq_ after complex: {xq_.shape}")
+    #print(f"xq_ after complex: {xq_.shape}")
     
     xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
-    print(f"xk_ after complex: {xk_.shape}")
+    #print(f"xk_ after complex: {xk_.shape}")
     
     freqs_cis = reshape_for_broadcast(freqs_cis, xq_)
-    print(f"freqs_cis after reshape: {freqs_cis.shape}")
+    #print(f"freqs_cis after reshape: {freqs_cis.shape}")
     
     xq_out = torch.view_as_real(xq_ * freqs_cis).flatten(3)
     xk_out = torch.view_as_real(xk_ * freqs_cis).flatten(3)
-    print(f"outputs: xq={xq_out.shape}, xk={xk_out.shape}")
+    #print(f"outputs: xq={xq_out.shape}, xk={xk_out.shape}")
     return xq_out.type_as(xq), xk_out.type_as(xk)
 
 def _precompute_freqs_cis(self):
@@ -103,14 +103,14 @@ def _precompute_freqs_cis(self):
 
 def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
     """Repeats the kv heads n_rep times."""
-    print(f"\nIn repeat_kv:")
+    #print(f"\nIn repeat_kv:")
     # Input expected to be [bs, slen, n_kv_heads, head_dim]
     bs, n_kv_heads, slen, head_dim = x.shape  # Note: input should be transposed already
-    print(f"input shape: bs={bs}, n_kv_heads={n_kv_heads}, slen={slen}, head_dim={head_dim}")
-    print(f"n_rep: {n_rep}")
+    #print(f"input shape: bs={bs}, n_kv_heads={n_kv_heads}, slen={slen}, head_dim={head_dim}")
+    #print(f"n_rep: {n_rep}")
     
     if n_rep == 1:
-        print("n_rep=1, returning input unchanged")
+        #print("n_rep=1, returning input unchanged")
         return x
     
     # Shape progression:
@@ -119,13 +119,13 @@ def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
     # 3. reshape: [bs, n_kv_heads * n_rep, slen, head_dim]
     
     expanded = torch.unsqueeze(x, dim=3)
-    print(f"after unsqueeze: {expanded.shape}")
+    #print(f"after unsqueeze: {expanded.shape}")
     
     expanded = expanded.expand(bs, n_kv_heads, slen, n_rep, head_dim)
-    print(f"after expand: {expanded.shape}")
+    #print(f"after expand: {expanded.shape}")
     
     result = expanded.reshape(bs, n_kv_heads * n_rep, slen, head_dim)
-    print(f"after reshape: {result.shape}")
+    #print(f"after reshape: {result.shape}")
     
     return result
 
