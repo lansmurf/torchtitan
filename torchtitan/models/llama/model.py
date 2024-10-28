@@ -11,6 +11,7 @@
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
+import math
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -130,7 +131,8 @@ def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
     return result
 
 def lambda_init_fn(depth):
-    return 1 / depth
+    """Initialize lambda based on depth, with a minimum value to avoid division by zero"""
+    return 0.8 - 0.6 * math.exp(-0.3 * max(1, depth))
 
 class DifferentialAttention(nn.Module):
     def __init__(self, model_args: ModelArgs):
