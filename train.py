@@ -44,13 +44,6 @@ def get_train_context(enable_loss_parallel: bool, enable_compiled_autograd: bool
 
     return context
 
-def create_causal_mask(batch_size: int, seq_len: int, n_heads: int, device: torch.device) -> BlockMask:
-    def causal_mask_mod(b, h, q_idx, kv_idx):
-        return q_idx >= kv_idx
-    
-    return create_block_mask(causal_mask_mod, batch_size, n_heads, seq_len, seq_len, device=device)
-
-
 # Enable debug tracing on failure: https://pytorch.org/docs/stable/elastic/errors.html
 @record
 def main(job_config: JobConfig):
@@ -262,6 +255,20 @@ def main(job_config: JobConfig):
 
     checkpoint.reset()
 
+    # causal mask def, dont bother since its static. needs to change if using prefixlm tho
+    def causal_fn(b, h, q_idx, kv_idx):
+        return q_idx >= kv_idx
+
+    causal_mask = create_block_mask(
+        causal_fn,
+        B=None,  # Broadcasting across batch
+        H=None,  # Broadcasting across heads
+        Q_LEN=job_config.training.seq_len,
+        KV_LEN=job_config.training.seq_len,
+        device=device,
+        _compile=True
+    )
+
     # train loop
     logger.info(
         f"Training starts at step {train_state.step + 1}, "
@@ -301,13 +308,6 @@ def main(job_config: JobConfig):
                 )
                 if parallel_dims.cp_enabled
                 else None)
-            
-            causal_mask = create_causal_mask(
-                batch_size=input_ids.size(0),
-                seq_len=input_ids.size(1),
-                n_heads=model_config.n_heads,
-                device=input_ids.device
-            )
 
             if parallel_dims.pp_enabled:
                 # Pipeline Parallel forward / backward inside step() call

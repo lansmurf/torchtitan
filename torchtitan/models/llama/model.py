@@ -161,14 +161,7 @@ class DifferentialAttention(nn.Module):
     def forward(self, x: torch.Tensor, mask: Optional[BlockMask], freqs_cis: Optional[torch.Tensor]) -> torch.Tensor:
         bsz, seqlen, embed_dim = x.shape
         
-        # Handle empty mask case with warning
-        if mask is None:
-            print("No mask provided, using causal masking by default.", UserWarning)
-            mask = create_block_mask(
-                lambda b, h, q_idx, kv_idx: q_idx >= kv_idx,
-                bsz, self.n_heads, seqlen, seqlen,
-                device=x.device
-            )
+        assert mask is not None, "No mask has been passed!"
         
         # Linear projections
         q = self.wq(x)
