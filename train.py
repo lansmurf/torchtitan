@@ -259,14 +259,16 @@ def main(job_config: JobConfig):
     def causal_fn(b, h, q_idx, kv_idx):
         return q_idx >= kv_idx
 
-    causal_mask = create_block_mask(
+    create_block_mask_compiled = torch.compile(create_block_mask)
+
+    # Create the compiled causal mask
+    causal_mask = create_block_mask_compiled(
         causal_fn,
         B=None,  # Broadcasting across batch
         H=None,  # Broadcasting across heads
         Q_LEN=job_config.training.seq_len,
         KV_LEN=job_config.training.seq_len,
         device=device,
-        _compile=True
     )
 
     # train loop
