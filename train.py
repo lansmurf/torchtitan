@@ -28,7 +28,7 @@ from torchtitan.parallelisms import (
 )
 from torchtitan.profiling import maybe_enable_memory_snapshot, maybe_enable_profiling
 from torch.nn.attention.flex_attention import create_block_mask, BlockMask
-
+import time
 
 def get_train_context(enable_loss_parallel: bool, enable_compiled_autograd: bool):
     @contextlib.contextmanager
@@ -43,6 +43,8 @@ def get_train_context(enable_loss_parallel: bool, enable_compiled_autograd: bool
             yield
 
     return context
+
+
 
 # Enable debug tracing on failure: https://pytorch.org/docs/stable/elastic/errors.html
 @record
@@ -64,6 +66,12 @@ def main(job_config: JobConfig):
         logger.info(
             f"Deterministic training on. Using seed: {job_config.training.seed}"
         )
+
+    timing_stats = {
+        'forward_ms': [],
+        'backward_ms': [],
+        'total_step_ms': []
+    }
 
     # init distributed
     world_size = int(os.environ["WORLD_SIZE"])
@@ -144,6 +152,23 @@ def main(job_config: JobConfig):
         f"{color.red}size: {model_param_count:,} total parameters{color.reset}"
     )
 
+    def train_step(model, input_ids, causal_mask, labels, loss_fn):
+        # Time the forward pass
+        forward_start = time.perf_counter()
+        pred = model(input_ids, causal_mask)
+        loss = loss_fn(pred, labels)
+        torch.cuda.synchronize()  # Ensure CUDA operations completed
+        forward_time = (time.perf_counter() - forward_start) * 1000  # Convert to ms
+        
+        # Time the backward pass
+        backward_start = time.perf_counter()
+        del pred
+        loss.backward()
+        torch.cuda.synchronize()  # Ensure CUDA operations completed
+        backward_time = (time.perf_counter() - backward_start) * 1000  # Convert to ms
+        
+        return loss, forward_time, backward_time
+
     # loss function to be shared by Pipeline Parallel and SPMD training
     def loss_fn(pred, labels):
         return torch.nn.functional.cross_entropy(
@@ -151,7 +176,8 @@ def main(job_config: JobConfig):
         )
 
     if job_config.training.compile:
-        loss_fn = torch.compile(loss_fn)
+        logger.info("Compiling training step...")
+        train_step = torch.compile(train_step)
 
     # apply parallelisms and initialization
     if parallel_dims.pp_enabled:
@@ -332,13 +358,42 @@ def main(job_config: JobConfig):
                 )
             else:
                 # Non-PP forward / backward
+                step_start = time.perf_counter()
                 with train_context(optional_context_parallel_ctx):
-                    pred = model(input_ids, causal_mask)
-                    loss = loss_fn(pred, labels)
-                    # pred.shape=(bs, seq_len, vocab_size)
-                    # need to free to before bwd to avoid peaking memory
-                    del pred
-                    loss.backward()
+                    loss, forward_ms, backward_ms = train_step(model, input_ids, causal_mask, labels, loss_fn)
+                torch.cuda.synchronize()
+                total_step_ms = (time.perf_counter() - step_start) * 1000
+                
+                # Store timing stats
+                timing_stats['forward_ms'].append(forward_ms)
+                timing_stats['backward_ms'].append(backward_ms)
+                timing_stats['total_step_ms'].append(total_step_ms)
+
+                # When logging metrics (in the existing logging section):
+                if train_state.step % job_config.metrics.log_freq == 0:
+                    avg_forward = sum(timing_stats['forward_ms'][-job_config.metrics.log_freq:]) / job_config.metrics.log_freq
+                    avg_backward = sum(timing_stats['backward_ms'][-job_config.metrics.log_freq:]) / job_config.metrics.log_freq
+                    avg_total = sum(timing_stats['total_step_ms'][-job_config.metrics.log_freq:]) / job_config.metrics.log_freq
+                    
+                    # Add to existing metrics dict
+                    metrics.update({
+                        'time_metrics/forward_ms': avg_forward,
+                        'time_metrics/backward_ms': avg_backward, 
+                        'time_metrics/total_step_ms': avg_total
+                    })
+                    
+                    # Modify the existing log message instead of creating a new one
+                    logger.info(
+                        f"{color.cyan}step: {train_state.step:2}  "
+                        f"{color.green}loss: {global_avg_loss:7.4f}  "
+                        f"{color.yellow}memory: {gpu_mem_stats.max_reserved_gib:5.2f}GiB"
+                        f"({gpu_mem_stats.max_reserved_pct:.2f}%)  "
+                        f"{color.blue}wps: {round(wps):,}  "
+                        f"{color.magenta}mfu: {mfu:.2f}%  "
+                        f"fwd: {avg_forward:.1f}ms  "
+                        f"bwd: {avg_backward:.1f}ms  "
+                        f"total: {avg_total:.1f}ms{color.reset}"
+                    )
 
             # clip gradients
             for m in model_parts:
