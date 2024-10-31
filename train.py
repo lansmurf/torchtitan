@@ -375,14 +375,34 @@ def main(job_config: JobConfig):
                     avg_backward = sum(timing_stats['backward_ms'][-job_config.metrics.log_freq:]) / job_config.metrics.log_freq
                     avg_total = sum(timing_stats['total_step_ms'][-job_config.metrics.log_freq:]) / job_config.metrics.log_freq
                     
-                    # Add to existing metrics dict
+                    metrics = {
+                        "loss_metrics/global_avg_loss": global_avg_loss,
+                        "loss_metrics/global_max_loss": global_max_loss,
+                        "wps": wps,
+                        "mfu(%)": mfu,
+                        "time_metrics/end_to_end(s)": time_end_to_end,
+                        "time_metrics/data_loading(s)": time_data_loading,
+                        "time_metrics/data_loading(%)": time_data_loading_pct,
+                        "memory/max_active(GiB)": gpu_mem_stats.max_active_gib,
+                        "memory/max_active(%)": gpu_mem_stats.max_active_pct,
+                        "memory/max_reserved(GiB)": gpu_mem_stats.max_reserved_gib,
+                        "memory/max_reserved(%)": gpu_mem_stats.max_reserved_pct,
+                        "memory/num_alloc_retries": gpu_mem_stats.num_alloc_retries,
+                        "memory/num_ooms": gpu_mem_stats.num_ooms,
+                    }
+
+                    # Add timing metrics here after metrics dict is created
+                    avg_forward = sum(timing_stats['forward_ms'][-job_config.metrics.log_freq:]) / job_config.metrics.log_freq
+                    avg_backward = sum(timing_stats['backward_ms'][-job_config.metrics.log_freq:]) / job_config.metrics.log_freq
+                    avg_total = sum(timing_stats['total_step_ms'][-job_config.metrics.log_freq:]) / job_config.metrics.log_freq
+                    
                     metrics.update({
                         'time_metrics/forward_ms': avg_forward,
                         'time_metrics/backward_ms': avg_backward, 
                         'time_metrics/total_step_ms': avg_total
                     })
-                    
-                    # Modify the existing log message instead of creating a new one
+
+                    # Update the log message
                     logger.info(
                         f"{color.cyan}step: {train_state.step:2}  "
                         f"{color.green}loss: {global_avg_loss:7.4f}  "
