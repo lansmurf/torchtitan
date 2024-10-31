@@ -79,7 +79,7 @@ def apply_rotary_emb(xq: torch.Tensor, xk: torch.Tensor, freqs_cis: torch.Tensor
     
     xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
     #print(f"xq_ after complex: {xq_.shape}")
-    
+
     xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
     #print(f"xk_ after complex: {xk_.shape}")
     
@@ -91,7 +91,7 @@ def apply_rotary_emb(xq: torch.Tensor, xk: torch.Tensor, freqs_cis: torch.Tensor
     #print(f"outputs: xq={xq_out.shape}, xk={xk_out.shape}")
     return xq_out.type_as(xq), xk_out.type_as(xk)
 
-def _precompute_freqs_cis(self):
+def _precompute_freqs_cis(self): 
     """
     The head dimension is halved for differential attention, so we need to adjust
     the dimension for freqs_cis computation accordingly.
@@ -139,14 +139,21 @@ class DifferentialAttention(nn.Module):
         super().__init__()
         self.n_heads = model_args.n_heads
         self.n_kv_heads = model_args.n_kv_heads if model_args.n_kv_heads is not None else model_args.n_heads
-        self.num_rep = self.n_heads // self.n_kv_heads
         self.head_dim = model_args.dim // model_args.n_heads // 2  # Halved head dimension
         self.scale = self.head_dim ** -0.5
         
-        # Linear projections - using same naming as DifferentialAttention
+        # Linear projections using native GQA dimensioning
         self.wq = nn.Linear(model_args.dim, model_args.dim, bias=False)
-        self.wk = nn.Linear(model_args.dim, model_args.dim // self.num_rep, bias=False)
-        self.wv = nn.Linear(model_args.dim, model_args.dim // self.num_rep, bias=False)
+        self.wk = nn.Linear(
+            model_args.dim, 
+            (model_args.dim // model_args.n_heads) * self.n_kv_heads, 
+            bias=False
+        )
+        self.wv = nn.Linear(
+            model_args.dim, 
+            (model_args.dim // model_args.n_heads) * self.n_kv_heads, 
+            bias=False
+        )
         self.wo = nn.Linear(model_args.dim, model_args.dim, bias=False)
 
         # Lambda parameters
@@ -154,10 +161,9 @@ class DifferentialAttention(nn.Module):
         self.lambda_k1 = nn.Parameter(torch.zeros(self.head_dim, dtype=torch.float32).normal_(mean=0, std=0.1))
         self.lambda_q2 = nn.Parameter(torch.zeros(self.head_dim, dtype=torch.float32).normal_(mean=0, std=0.1))
         self.lambda_k2 = nn.Parameter(torch.zeros(self.head_dim, dtype=torch.float32).normal_(mean=0, std=0.1))
-        # Using the original lambda_init_fn
         self.lambda_init = lambda_init_fn(model_args.n_layers)
 
-        # Sublayer norm - using build_norm from model_args
+        # Sublayer norm
         self.subln = build_norm(model_args.norm_type, 2 * self.head_dim, eps=model_args.norm_eps)
 
     def forward(self, x: torch.Tensor, mask: Optional[BlockMask], freqs_cis: Optional[torch.Tensor]) -> torch.Tensor:
@@ -187,21 +193,21 @@ class DifferentialAttention(nn.Module):
         k1, k2 = k[:, :, :, 0], k[:, :, :, 1]
         v1, v2 = v[:, :, :, 0], v[:, :, :, 1]
 
-        # Prepare for attention
+        # Prepare for attention (only transpose, no repeat_kv needed)
         q1 = q1.transpose(1, 2)
         q2 = q2.transpose(1, 2)
-        k1 = repeat_kv(k1.transpose(1, 2), self.num_rep)
-        k2 = repeat_kv(k2.transpose(1, 2), self.num_rep)
-        v1 = repeat_kv(v1.transpose(1, 2), self.num_rep)
-        v2 = repeat_kv(v2.transpose(1, 2), self.num_rep)
+        k1 = k1.transpose(1, 2)
+        k2 = k2.transpose(1, 2)
+        v1 = v1.transpose(1, 2)
+        v2 = v2.transpose(1, 2)
 
-        # Compute attentions
-        attn11 = flex_attention(q1, k1, v1, scale=self.scale, block_mask=mask)
-        attn12 = flex_attention(q1, k1, v2, scale=self.scale, block_mask=mask)
+        # Compute attentions with enable_gqa=True
+        attn11 = flex_attention(q1, k1, v1, scale=self.scale, block_mask=mask, enable_gqa=True)
+        attn12 = flex_attention(q1, k1, v2, scale=self.scale, block_mask=mask, enable_gqa=True)
         attn1 = torch.cat([attn11, attn12], dim=-1)
         
-        attn21 = flex_attention(q2, k2, v1, scale=self.scale, block_mask=mask)
-        attn22 = flex_attention(q2, k2, v2, scale=self.scale, block_mask=mask)
+        attn21 = flex_attention(q2, k2, v1, scale=self.scale, block_mask=mask, enable_gqa=True)
+        attn22 = flex_attention(q2, k2, v2, scale=self.scale, block_mask=mask, enable_gqa=True)
         attn2 = torch.cat([attn21, attn22], dim=-1)
 
         # Apply differential attention
