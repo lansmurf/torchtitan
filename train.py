@@ -30,6 +30,8 @@ from torchtitan.profiling import maybe_enable_memory_snapshot, maybe_enable_prof
 from torch.nn.attention.flex_attention import create_block_mask, BlockMask
 import time
 
+torch.set_float32_matmul_precision('high')  # Enables TF32
+
 def get_train_context(enable_loss_parallel: bool, enable_compiled_autograd: bool):
     @contextlib.contextmanager
     def context():
@@ -43,8 +45,6 @@ def get_train_context(enable_loss_parallel: bool, enable_compiled_autograd: bool
             yield
 
     return context
-
-
 
 # Enable debug tracing on failure: https://pytorch.org/docs/stable/elastic/errors.html
 @record
@@ -153,21 +153,21 @@ def main(job_config: JobConfig):
     )
 
     def train_step(model, input_ids, causal_mask, labels, loss_fn):
-        # Time the forward pass
-        forward_start = time.perf_counter()
+        # Use cuda events instead of perf_counter
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
+        
+        start.record()
         pred = model(input_ids, causal_mask)
         loss = loss_fn(pred, labels)
-        torch.cuda.synchronize()  # Ensure CUDA operations completed
-        forward_time = (time.perf_counter() - forward_start) * 1000  # Convert to ms
-        
-        # Time the backward pass
-        backward_start = time.perf_counter()
         del pred
         loss.backward()
-        torch.cuda.synchronize()  # Ensure CUDA operations completed
-        backward_time = (time.perf_counter() - backward_start) * 1000  # Convert to ms
+        end.record()
         
-        return loss, forward_time, backward_time
+        torch.cuda.synchronize()
+        elapsed = start.elapsed_time(end)
+        
+        return loss, elapsed/2, elapsed/2  # Split time equally for now
 
     # loss function to be shared by Pipeline Parallel and SPMD training
     def loss_fn(pred, labels):
