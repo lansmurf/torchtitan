@@ -68,8 +68,6 @@ def main(job_config: JobConfig):
         )
 
     timing_stats = {
-        'forward_ms': [],
-        'backward_ms': [],
         'total_step_ms': []
     }
 
@@ -393,8 +391,6 @@ def main(job_config: JobConfig):
                     global_avg_loss, global_max_loss = avg_loss, max_loss
 
                 # Calculate timing averages
-                avg_forward = sum(timing_stats['forward_ms'][-job_config.metrics.log_freq:]) / job_config.metrics.log_freq
-                avg_backward = sum(timing_stats['backward_ms'][-job_config.metrics.log_freq:]) / job_config.metrics.log_freq
                 avg_total = sum(timing_stats['total_step_ms'][-job_config.metrics.log_freq:]) / job_config.metrics.log_freq
 
                 # update train state
@@ -442,8 +438,6 @@ def main(job_config: JobConfig):
                     f"({gpu_mem_stats.max_reserved_pct:.2f}%)  "
                     f"{color.blue}wps: {round(wps):,}  "
                     f"{color.magenta}mfu: {mfu:.2f}%  "
-                    f"fwd: {avg_forward:.1f}ms  "
-                    f"bwd: {avg_backward:.1f}ms  "
                     f"total: {avg_total:.1f}ms{color.reset}"
                 )
 
