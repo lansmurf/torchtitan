@@ -153,21 +153,14 @@ def main(job_config: JobConfig):
     )
 
     def train_step(model, input_ids, causal_mask, labels, loss_fn):
-        # Use cuda events instead of perf_counter
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
-        
-        start.record()
         pred = model(input_ids, causal_mask)
         loss = loss_fn(pred, labels)
         del pred
         loss.backward()
-        end.record()
         
         torch.cuda.synchronize()
-        elapsed = start.elapsed_time(end)
         
-        return loss, elapsed/2, elapsed/2  # Split time equally for now
+        return loss
 
     # loss function to be shared by Pipeline Parallel and SPMD training
     def loss_fn(pred, labels):
@@ -360,13 +353,11 @@ def main(job_config: JobConfig):
                 # Non-PP forward / backward
                 step_start = time.perf_counter()
                 with train_context(optional_context_parallel_ctx):
-                    loss, forward_ms, backward_ms = train_step(model, input_ids, causal_mask, labels, loss_fn)
+                    loss = train_step(model, input_ids, causal_mask, labels, loss_fn)
                 torch.cuda.synchronize()
                 total_step_ms = (time.perf_counter() - step_start) * 1000
                 
                 # Store timing stats
-                timing_stats['forward_ms'].append(forward_ms)
-                timing_stats['backward_ms'].append(backward_ms)
                 timing_stats['total_step_ms'].append(total_step_ms)
 
             # clip gradients
@@ -433,8 +424,6 @@ def main(job_config: JobConfig):
                     "time_metrics/end_to_end(s)": time_end_to_end,
                     "time_metrics/data_loading(s)": time_data_loading,
                     "time_metrics/data_loading(%)": time_data_loading_pct,
-                    "time_metrics/forward_ms": avg_forward,
-                    "time_metrics/backward_ms": avg_backward,
                     "time_metrics/total_step_ms": avg_total,
                     "memory/max_active(GiB)": gpu_mem_stats.max_active_gib,
                     "memory/max_active(%)": gpu_mem_stats.max_active_pct,
