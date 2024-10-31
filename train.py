@@ -369,52 +369,6 @@ def main(job_config: JobConfig):
                 timing_stats['backward_ms'].append(backward_ms)
                 timing_stats['total_step_ms'].append(total_step_ms)
 
-                # When logging metrics (in the existing logging section):
-                if train_state.step % job_config.metrics.log_freq == 0:
-                    avg_forward = sum(timing_stats['forward_ms'][-job_config.metrics.log_freq:]) / job_config.metrics.log_freq
-                    avg_backward = sum(timing_stats['backward_ms'][-job_config.metrics.log_freq:]) / job_config.metrics.log_freq
-                    avg_total = sum(timing_stats['total_step_ms'][-job_config.metrics.log_freq:]) / job_config.metrics.log_freq
-                    
-                    metrics = {
-                        "loss_metrics/global_avg_loss": global_avg_loss,
-                        "loss_metrics/global_max_loss": global_max_loss,
-                        "wps": wps,
-                        "mfu(%)": mfu,
-                        "time_metrics/end_to_end(s)": time_end_to_end,
-                        "time_metrics/data_loading(s)": time_data_loading,
-                        "time_metrics/data_loading(%)": time_data_loading_pct,
-                        "memory/max_active(GiB)": gpu_mem_stats.max_active_gib,
-                        "memory/max_active(%)": gpu_mem_stats.max_active_pct,
-                        "memory/max_reserved(GiB)": gpu_mem_stats.max_reserved_gib,
-                        "memory/max_reserved(%)": gpu_mem_stats.max_reserved_pct,
-                        "memory/num_alloc_retries": gpu_mem_stats.num_alloc_retries,
-                        "memory/num_ooms": gpu_mem_stats.num_ooms,
-                    }
-
-                    # Add timing metrics here after metrics dict is created
-                    avg_forward = sum(timing_stats['forward_ms'][-job_config.metrics.log_freq:]) / job_config.metrics.log_freq
-                    avg_backward = sum(timing_stats['backward_ms'][-job_config.metrics.log_freq:]) / job_config.metrics.log_freq
-                    avg_total = sum(timing_stats['total_step_ms'][-job_config.metrics.log_freq:]) / job_config.metrics.log_freq
-                    
-                    metrics.update({
-                        'time_metrics/forward_ms': avg_forward,
-                        'time_metrics/backward_ms': avg_backward, 
-                        'time_metrics/total_step_ms': avg_total
-                    })
-
-                    # Update the log message
-                    logger.info(
-                        f"{color.cyan}step: {train_state.step:2}  "
-                        f"{color.green}loss: {global_avg_loss:7.4f}  "
-                        f"{color.yellow}memory: {gpu_mem_stats.max_reserved_gib:5.2f}GiB"
-                        f"({gpu_mem_stats.max_reserved_pct:.2f}%)  "
-                        f"{color.blue}wps: {round(wps):,}  "
-                        f"{color.magenta}mfu: {mfu:.2f}%  "
-                        f"fwd: {avg_forward:.1f}ms  "
-                        f"bwd: {avg_backward:.1f}ms  "
-                        f"total: {avg_total:.1f}ms{color.reset}"
-                    )
-
             # clip gradients
             for m in model_parts:
                 torch.nn.utils.clip_grad_norm_(
@@ -436,10 +390,7 @@ def main(job_config: JobConfig):
             losses_since_last_log.append(loss)
 
             # log metrics
-            if (
-                train_state.step == 1
-                or train_state.step % job_config.metrics.log_freq == 0
-            ):
+            if (train_state.step == 1 or train_state.step % job_config.metrics.log_freq == 0):
                 losses = [loss.item() for loss in losses_since_last_log]
                 avg_loss, max_loss = sum(losses) / len(losses), max(losses)
                 if parallel_dims.dp_enabled:
@@ -449,6 +400,11 @@ def main(job_config: JobConfig):
                     )
                 else:
                     global_avg_loss, global_max_loss = avg_loss, max_loss
+
+                # Calculate timing averages
+                avg_forward = sum(timing_stats['forward_ms'][-job_config.metrics.log_freq:]) / job_config.metrics.log_freq
+                avg_backward = sum(timing_stats['backward_ms'][-job_config.metrics.log_freq:]) / job_config.metrics.log_freq
+                avg_total = sum(timing_stats['total_step_ms'][-job_config.metrics.log_freq:]) / job_config.metrics.log_freq
 
                 # update train state
                 train_state.log_steps.append(train_state.step)
@@ -461,9 +417,6 @@ def main(job_config: JobConfig):
                 wps = ntokens_since_last_log / (
                     time_delta * parallel_dims.non_data_parallel_size
                 )
-                # model FLOPS utilization
-                # For its definition and calculation, please refer to the PaLM paper:
-                # https://arxiv.org/abs/2204.02311
                 mfu = 100 * num_flop_per_token * wps / gpu_peak_flops
 
                 time_end_to_end = time_delta / job_config.metrics.log_freq
@@ -480,6 +433,9 @@ def main(job_config: JobConfig):
                     "time_metrics/end_to_end(s)": time_end_to_end,
                     "time_metrics/data_loading(s)": time_data_loading,
                     "time_metrics/data_loading(%)": time_data_loading_pct,
+                    "time_metrics/forward_ms": avg_forward,
+                    "time_metrics/backward_ms": avg_backward,
+                    "time_metrics/total_step_ms": avg_total,
                     "memory/max_active(GiB)": gpu_mem_stats.max_active_gib,
                     "memory/max_active(%)": gpu_mem_stats.max_active_pct,
                     "memory/max_reserved(GiB)": gpu_mem_stats.max_reserved_gib,
@@ -489,13 +445,17 @@ def main(job_config: JobConfig):
                 }
                 metric_logger.log(metrics, step=train_state.step)
 
+                # Update logging to include timing info
                 logger.info(
                     f"{color.cyan}step: {train_state.step:2}  "
                     f"{color.green}loss: {global_avg_loss:7.4f}  "
                     f"{color.yellow}memory: {gpu_mem_stats.max_reserved_gib:5.2f}GiB"
                     f"({gpu_mem_stats.max_reserved_pct:.2f}%)  "
                     f"{color.blue}wps: {round(wps):,}  "
-                    f"{color.magenta}mfu: {mfu:.2f}%{color.reset}"
+                    f"{color.magenta}mfu: {mfu:.2f}%  "
+                    f"fwd: {avg_forward:.1f}ms  "
+                    f"bwd: {avg_backward:.1f}ms  "
+                    f"total: {avg_total:.1f}ms{color.reset}"
                 )
 
                 losses_since_last_log.clear()
