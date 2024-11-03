@@ -249,9 +249,14 @@ class JobConfig:
             parallelism method used is FSDP (Fully Sharded Data Parallelism).
 
             -1 means leftover ranks will be used (After DP_REPLICATE/SP/PP). Note that
-            only one of `data_parallel_replicate_degree` and `data_parallel_shard_degree`
-            can be negative.
-            1 means disabled.""",
+            only `data_parallel_shard_degree` can be negative. 1 means disabled.""",
+        )
+        self.parser.add_argument(
+            "--training.enable_cpu_offload",
+            type=bool,
+            default=False,
+            help="""
+            Whether to apply CPU offloading of parameters, gradients, and optimizer states in FSDP""",
         )
         self.parser.add_argument(
             "--training.tensor_parallel_degree",
@@ -570,6 +575,19 @@ class JobConfig:
                 )
                 logger.exception(f"Error details: {str(e)}")
                 raise e
+
+        # if split-points came from 'args' (from cmd line) it would have already been parsed into a list by that parser
+        if (
+            "experimental" in args_dict
+            and "pipeline_parallel_split_points" in args_dict["experimental"]
+            and isinstance(
+                args_dict["experimental"]["pipeline_parallel_split_points"], str
+            )
+        ):
+            exp = args_dict["experimental"]
+            exp["pipeline_parallel_split_points"] = string_list(
+                exp["pipeline_parallel_split_points"]
+            )
 
         # override args dict with cmd_args
         cmd_args_dict = self._args_to_two_level_dict(cmd_args)

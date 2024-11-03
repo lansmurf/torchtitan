@@ -103,7 +103,7 @@ def estimate_memory(job_config: JobConfig):
     # loss fn can be shared by pipeline-parallel or non-pp execution
     def loss_fn(pred, labels):
         return torch.nn.functional.cross_entropy(
-            pred.flatten(0, 1), labels.flatten(0, 1)
+            pred.flatten(0, 1).float(), labels.flatten(0, 1)
         )
 
     # build model (using meta init)
@@ -216,4 +216,5 @@ if __name__ == "__main__":
     try:
         estimate_memory(config)
     finally:
-        torch.distributed.destroy_process_group()
+        if torch.distributed.is_initialized():
+            torch.distributed.destroy_process_group()
