@@ -36,6 +36,7 @@ data_parallel_shard_degree = 4
 tensor_parallel_degree = 1  # 8-way TP
 compile = true
 dataset = "smollm1"
+seed = 42
 
 [experimental]
 context_parallel_degree = 1
