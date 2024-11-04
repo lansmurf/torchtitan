@@ -1,9 +1,3 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
-#
-# This source code is licensed under the BSD-style license found in the
-# LICENSE file in the root directory of this source tree.
-
 import contextlib
 import gc
 import os
@@ -13,6 +7,7 @@ from torch._guards import active_fake_mode
 from torch._subclasses.fake_tensor import FakeTensorMode
 from torch.distributed._tools.fsdp2_mem_tracker import FSDPMemTracker
 from torch.testing._internal.distributed.fake_pg import FakeStore
+from torch.nn.attention.flex_attention import create_block_mask
 
 from torchtitan import utils
 from torchtitan.config_manager import JobConfig
@@ -100,6 +95,31 @@ def estimate_memory(job_config: JobConfig):
         job_config.experimental.enable_compiled_autograd,
     )
 
+    # Define causal mask function
+    def causal_fn(b, h, q_idx, kv_idx):
+        return q_idx >= kv_idx
+
+    # Create the causal mask - compile if needed
+    if job_config.training.compile:
+        create_block_mask_compiled = torch.compile(create_block_mask)
+        causal_mask = create_block_mask_compiled(
+            causal_fn,
+            B=None,  # Broadcasting across batch
+            H=None,  # Broadcasting across heads
+            Q_LEN=job_config.training.seq_len,
+            KV_LEN=job_config.training.seq_len,
+            device=device,
+        )
+    else:
+        causal_mask = create_block_mask(
+            causal_fn,
+            B=None,
+            H=None,
+            Q_LEN=job_config.training.seq_len,
+            KV_LEN=job_config.training.seq_len,
+            device=device,
+        )
+
     # loss fn can be shared by pipeline-parallel or non-pp execution
     def loss_fn(pred, labels):
         return torch.nn.functional.cross_entropy(
@@ -166,7 +186,7 @@ def estimate_memory(job_config: JobConfig):
                 input_ids, labels = batch
                 # train step
                 with train_context():
-                    pred = model(input_ids)
+                    pred = model(input_ids, causal_mask)  # Added causal_mask here
                     loss = loss_fn(pred, labels)
                     del pred
                     loss.backward()
