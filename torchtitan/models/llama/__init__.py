@@ -33,7 +33,7 @@ llama3_configs = {
         max_seq_len=2048, rope_theta=500000),
     "124M": ModelArgs(
         dim=512,
-        n_layers=10,
+        n_layers=12,
         n_heads=12,
         n_kv_heads=4,
         multiple_of=128,
