@@ -35,10 +35,8 @@ llama3_configs = {
         n_layers=12,  # Reduced from 16
         n_heads=12,  # Reduced from 32
         n_kv_heads=4,  # Reduced from 8
-        ffn_dim_multiplier=4,  # Keeping the same ratio
+        ffn_dim_multiplier=1.3,  # Keeping the same ratio
         norm_eps=1e-5,  # Same as 1B
-        max_seq_len=131072,  # Keeping the same as 1B
-        vocab_size=128256,  # Keeping the same as 1B
         rope_theta=500000.0,  # Same as 1B
     ),
     "1B": ModelArgs(
@@ -47,10 +45,8 @@ llama3_configs = {
         n_heads=32,  # num_attention_heads
         n_kv_heads=8,  # num_key_value_heads
         multiple_of=256,  # Assuming this based on intermediate_size / hidden_size ratio
-        ffn_dim_multiplier=4,  # intermediate_size / hidden_size
+        ffn_dim_multiplier=1.3,  # intermediate_size / hidden_size
         norm_eps=1e-5,  # rms_norm_eps
-        max_seq_len=131072,  # max_position_embeddings
-        vocab_size=128256,
         rope_theta=500000.0,
     ),
     "8B": ModelArgs(
