@@ -1,9 +1,9 @@
 # torchtitan Config.toml
-# NOTE: this toml config is for Llama 3 124M with FSDP
+# NOTE: this toml config is a preset for 64 A100 GPUs.
 
 [job]
 dump_folder = "./outputs"
-description = "Llama 3 124M training with FSDP"
+description = "Llama 3 70B training"
 
 [profiling]
 enable_profiling = true
@@ -17,27 +17,28 @@ save_tb_folder = "tb"
 
 [model]
 name = "llama3"
-flavor = "124M"
-norm_type = "rmsnorm"
+flavor = "124m"
+norm_type = "rmsnorm"  # layernorm / np_layernorm / rmsnorm / fused_rmsnorm
 tokenizer_path = "./torchtitan/datasets/tokenizer/original/tokenizer.model"
 
 [optimizer]
 name = "AdamW"
-lr = 2e-5  # Increased slightly as smaller models often benefit from higher learning rates
+lr = 5e-4
 
 [training]
-batch_size = 32  # Increased as smaller models can handle larger batch sizes
-seq_len = 4096  # Reduced from 4096 to be more appropriate for a smaller model
-warmup_steps = 100
-max_norm = 1.0
-steps = 2000  # Increased as smaller models might need more steps to converge
+batch_size = 32
+seq_len = 1024
+warmup_steps = 100  # lr scheduler warm up, normally 20% of the train steps
+max_norm = 1.0  # grad norm clipping
+steps = 1000
 data_parallel_replicate_degree = 1
-data_parallel_shard_degree = 4  # This activates FSDP
-tensor_parallel_degree = 1
-compile = true
-dataset = "fineweb10b"
+data_parallel_shard_degree = 4
+tensor_parallel_degree = 1  # 8-way TP
+compile = false
+dataset = "smollm1"
 
 [experimental]
+context_parallel_degree = 1
 pipeline_parallel_degree = 1
 
 [checkpoint]
@@ -46,19 +47,11 @@ folder = "checkpoint"
 interval_type = "steps"
 interval = 500
 model_weights_only = false
-export_dtype = "bfloat16"  # Keeping bfloat16 as in the 1B config
-async_mode = "disabled"
+export_dtype = "float32"
+async_mode = "disabled" # ["disabled", "async", "async_with_pinned_mem"]
 
 [activation_checkpoint]
-mode = 'selective'
-selective_ac_option = 'op'
+mode = 'full'
 
 [float8]
 enable_float8_linear = false
-
-[fsdp]
-sharding_strategy = "FULL_SHARD"
-backward_prefetch = "BACKWARD_PRE"
-mixed_precision = "FULL"
-flatten_parameters = true
-activation_checkpointing = true
