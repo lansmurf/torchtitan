@@ -34,7 +34,7 @@ llama3_configs = {
     "124M": ModelArgs(
         dim=512,
         n_layers=12,
-        n_heads=12,
+        n_heads=8,
         n_kv_heads=4,
         multiple_of=128,
         ffn_dim_multiplier=1.0,  # We'll explicitly set intermediate_size instead
