@@ -30,14 +30,14 @@ llama2_configs = {
 
 llama3_configs = {
     "debugmodel": ModelArgs(dim=768, n_layers=12, n_heads=12, n_kv_heads=4, multiple_of=256, ffn_dim_multiplier=1.3, 
-        max_seq_len=2048, rope_theta=500000, vocab_size=128256),
+        max_seq_len=2048, rope_theta=500000),
     "124M": ModelArgs(
         dim=768,
         n_layers=12,
         n_heads=12,
         n_kv_heads=4,
-        multiple_of=1024,
-        ffn_dim_multiplier=1.3,  # We'll explicitly set intermediate_size instead
+        multiple_of=256,
+        ffn_dim_multiplier=1.5,  # We'll explicitly set intermediate_size instead
         norm_eps=1e-5,
         rope_theta=500000.0,
         max_seq_len=2048,
