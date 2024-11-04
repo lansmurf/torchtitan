@@ -32,10 +32,10 @@ warmup_steps = 100
 max_norm = 1.0
 steps = 2000  # Increased as smaller models might need more steps to converge
 data_parallel_replicate_degree = 1
-data_parallel_shard_degree = 1  # This activates FSDP
+data_parallel_shard_degree = 4  # This activates FSDP
 tensor_parallel_degree = 1
 compile = true
-dataset = "c4_mini"
+dataset = "fineweb10b"
 
 [experimental]
 pipeline_parallel_degree = 1
