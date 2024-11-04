@@ -40,7 +40,7 @@ llama3_configs = {
         ffn_dim_multiplier=1.5,  # We'll explicitly set intermediate_size instead
         norm_eps=1e-5,
         rope_theta=500000.0,
-        max_seq_len=2048,
+        max_seq_len=1024,
         vocab_size=128256,
         ),
         "1B": ModelArgs(
