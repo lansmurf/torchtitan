@@ -48,7 +48,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--tokenizer_path",
         type=str,
-        default="/original/tokenizer.model",
+        default="original/",
         help="the tokenizer.model path relative to repo_id",
     )
     parser.add_argument(
