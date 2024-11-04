@@ -7,7 +7,7 @@ import torch
 from torch.distributed.checkpoint.stateful import Stateful
 from torch.utils.data import IterableDataset
 from torchtitan.logging import logger
-
+from torchtitan.datasets.tokenizer import Tokenizer
 from datasets import Dataset, load_dataset
 from datasets.distributed import split_dataset_by_node
 
