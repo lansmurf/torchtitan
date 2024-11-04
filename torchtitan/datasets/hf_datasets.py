@@ -4,6 +4,7 @@ import numpy as np
 import os
 
 import torch
+from torchdata.stateful_dataloader import StatefulDataLoader
 from torch.distributed.checkpoint.stateful import Stateful
 from torch.utils.data import IterableDataset
 from torchtitan.logging import logger
