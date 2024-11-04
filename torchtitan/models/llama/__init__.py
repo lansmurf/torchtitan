@@ -31,24 +31,29 @@ llama2_configs = {
 llama3_configs = {
     "debugmodel": ModelArgs(dim=512, n_layers=8, n_heads=8, rope_theta=500000),
     "124M": ModelArgs(
-        dim=768,  # Reduced from 2048
-        n_layers=12,  # Reduced from 16
-        n_heads=12,  # Reduced from 32
-        n_kv_heads=4,  # Reduced from 8
-        ffn_dim_multiplier=1.3,  # Keeping the same ratio
-        norm_eps=1e-5,  # Same as 1B
-        rope_theta=500000.0,  # Same as 1B
-    ),
-    "1B": ModelArgs(
-        dim=2048,  # hidden_size
-        n_layers=16,  # num_hidden_layers
-        n_heads=32,  # num_attention_heads
-        n_kv_heads=8,  # num_key_value_heads
-        multiple_of=256,  # Assuming this based on intermediate_size / hidden_size ratio
-        ffn_dim_multiplier=1.3,  # intermediate_size / hidden_size
-        norm_eps=1e-5,  # rms_norm_eps
+        dim=768,
+        n_layers=12,
+        n_heads=12,
+        n_kv_heads=4,
+        multiple_of=256,
+        ffn_dim_multiplier=1.0,  # We'll explicitly set intermediate_size instead
+        norm_eps=1e-5,
         rope_theta=500000.0,
-    ),
+        max_seq_len=131072,
+        vocab_size=128256,
+        ),
+        "1B": ModelArgs(
+        dim=2048,
+        n_layers=16,
+        n_heads=32,
+        n_kv_heads=8,
+        multiple_of=256,
+        ffn_dim_multiplier=1.0,  # We'll explicitly set intermediate_size
+        norm_eps=1e-5,
+        rope_theta=500000.0,
+        max_seq_len=131072,
+        vocab_size=128256,
+        ),
     "8B": ModelArgs(
         dim=4096,
         n_layers=32,
