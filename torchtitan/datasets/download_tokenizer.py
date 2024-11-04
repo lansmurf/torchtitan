@@ -42,7 +42,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--repo_id",
         type=str,
-        default="unsloth/Meta-Llama-3-8B",
+        default="unsloth/llama-3-8b",
         help="Repository ID to download from. default to Llama-3-8B",
     )
     parser.add_argument(
