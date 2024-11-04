@@ -4,8 +4,10 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+import os
+import shutil
+from pathlib import Path
 from typing import Optional
-
 from requests.exceptions import HTTPError
 
 
@@ -14,9 +16,24 @@ def hf_download(
 ) -> None:
     from huggingface_hub import hf_hub_download
 
+    # Construct tokenizer path
     tokenizer_path = (
         f"{tokenizer_path}/tokenizer.model" if tokenizer_path else "tokenizer.model"
     )
+
+    # Convert to Path objects
+    local_dir_path = Path(local_dir)
+    target_path = local_dir_path / os.path.basename(tokenizer_path)
+
+    # Ensure the target directory exists
+    local_dir_path.mkdir(parents=True, exist_ok=True)
+
+    # Clean up existing path if necessary
+    if target_path.exists():
+        if target_path.is_dir():
+            shutil.rmtree(target_path)
+        else:
+            target_path.unlink()
 
     try:
         hf_hub_download(
