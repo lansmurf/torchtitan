@@ -29,7 +29,7 @@ llama2_configs = {
 }
 
 llama3_configs = {
-    "debugmodel": ModelArgs(dim=768, n_layers=12, n_heads=12, n_kv_heads=4, multiple_of=128, ffn_dim_multiplier=1.3, rope_theta=500000),
+    "debugmodel": ModelArgs(dim=768, n_layers=12, n_heads=12, n_kv_heads=4, multiple_of=256, ffn_dim_multiplier=1.3, rope_theta=500000),
     "124M": ModelArgs(
         dim=768,
         n_layers=12,
