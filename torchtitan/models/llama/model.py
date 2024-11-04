@@ -37,19 +37,19 @@ class ModelArgs:
     norm_type: str = "rmsnorm"
 
 def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0) -> torch.Tensor:
-    print(f"\nprecompute_freqs_cis input dims: dim={dim}, end={end}")
+    #print(f"\nprecompute_freqs_cis input dims: dim={dim}, end={end}")
     
     freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
-    print(f"freqs shape: {freqs.shape}")
+    #print(f"freqs shape: {freqs.shape}")
     
     t = torch.arange(end, device=freqs.device)
-    print(f"t shape: {t.shape}")
+    #print(f"t shape: {t.shape}")
     
     freqs = torch.outer(t, freqs).float()
-    print(f"freqs after outer shape: {freqs.shape}")
+    #print(f"freqs after outer shape: {freqs.shape}")
     
     freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
-    print(f"freqs_cis final shape: {freqs_cis.shape}")
+    #print(f"freqs_cis final shape: {freqs_cis.shape}")
     return freqs_cis
 
 
