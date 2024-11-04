@@ -35,7 +35,6 @@ llama3_configs = {
         n_layers=12,  # Reduced from 16
         n_heads=12,  # Reduced from 32
         n_kv_heads=4,  # Reduced from 8
-        multiple_of=128,  # Reduced from 256
         ffn_dim_multiplier=4,  # Keeping the same ratio
         norm_eps=1e-5,  # Same as 1B
         max_seq_len=131072,  # Keeping the same as 1B
