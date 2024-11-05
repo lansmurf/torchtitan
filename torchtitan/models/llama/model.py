@@ -262,8 +262,7 @@ class FlexAttention(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        freqs_cis: torch.Tensor,
-        mask: Optional[BlockMask]
+        mask: Optional[BlockMask], freqs_cis: Optional[torch.Tensor]
     ):
 
         bs, seqlen, _ = x.shape
@@ -325,8 +324,7 @@ class Attention(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        freqs_cis: torch.Tensor,
-        mask: Optional[BlockMask] = None
+        mask: Optional[BlockMask], freqs_cis: Optional[torch.Tensor]
     ):
         bs, seqlen, _ = x.shape
         xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
