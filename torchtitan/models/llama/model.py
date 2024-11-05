@@ -287,7 +287,7 @@ class FlexAttention(nn.Module):
         xv = values.transpose(1, 2)  # (bs, n_local_heads, seqlen, head_dim)
 
         # we use casual mask for training
-        attn = flex_attention(xq, xk, xv, block_mask=mask, scale=self.scale, enable_gqa=True)
+        output = flex_attention(xq, xk, xv, block_mask=mask, scale=self.scale, enable_gqa=True)
 
         output = output.transpose(
             1, 2
@@ -453,7 +453,7 @@ class TransformerBlock(nn.Module):
         super().__init__()
         self.n_heads = model_args.n_heads
         self.dim = model_args.dim
-        self.attention = FlexAttention(model_args)
+        self.attention = DifferentialAttention(model_args)
         self.feed_forward = FeedForward(
             dim=model_args.dim,
             hidden_dim=4 * model_args.dim,
