@@ -317,6 +317,11 @@ class Attention(nn.Module):
             model_args.n_heads * self.head_dim, model_args.dim, bias=False
         )
 
+    def init_weights(self, init_std: float):
+        for linear in (self.wq, self.wk, self.wv):
+            nn.init.trunc_normal_(linear.weight, mean=0.0, std=0.02)
+        nn.init.trunc_normal_(self.wo.weight, mean=0.0, std=init_std)
+
     def forward(
         self,
         x: torch.Tensor,
