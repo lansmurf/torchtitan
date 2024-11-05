@@ -338,10 +338,10 @@ class Attention(nn.Module):
 
         # Rearrange for attention computation
         xq = xq.transpose(1, 2)  # (bs, n_local_heads, seqlen, head_dim)
-        keys = keys.transpose(1, 2)
-        values = values.transpose(1, 2)
+        xk = xk.transpose(1, 2)
+        xv = xv.transpose(1, 2)
 
-        output = F.scaled_dot_product_attention(xq, keys, values, is_causal=True, enable_gqa=True)
+        output = F.scaled_dot_product_attention(xq, xk, xv, is_causal=True, enable_gqa=True)
         output = output.transpose(1, 2).contiguous()
         output = output.view(bs, seqlen, -1)
         return self.wo(output)
