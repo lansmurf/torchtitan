@@ -334,6 +334,8 @@ class Attention(nn.Module):
         xk = xk.view(bs, seqlen, -1, self.head_dim)
         xv = xv.view(bs, seqlen, -1, self.head_dim)
 
+        xq, xk = apply_rotary_emb(xq, xk, freqs_cis)
+
         # repeat k/v heads if n_kv_heads < n_heads
         keys = repeat_kv(xk, self.n_rep)
         values = repeat_kv(xv, self.n_rep)
