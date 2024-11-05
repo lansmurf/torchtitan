@@ -287,7 +287,7 @@ class FlexAttention(nn.Module):
         xv = values.transpose(1, 2)  # (bs, n_local_heads, seqlen, head_dim)
 
         # we use casual mask for training
-        output = flex_attention(xq, xk, xv, block_mask=mask, scale=self.scale, enable_gqa=True)
+        attn = flex_attention(xq, xk, xv, block_mask=mask, scale=self.scale, enable_gqa=True)
 
         output = output.transpose(
             1, 2
