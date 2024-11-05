@@ -302,7 +302,7 @@ def main(job_config: JobConfig):
     logger.info(
         f"Training starts at step {train_state.step + 1}, "
         f"with local batch size {job_config.training.batch_size}, "
-        f"global batch size {job_config.training.batch_size * dp_degree}, "
+        f"global batch size {job_config.training.batch_size * dp_degree * job_config.training.gradient_accumulation_steps}, "
         f"sequence length {job_config.training.seq_len}, "
         f"total steps {job_config.training.steps} "
         f"(warmup {job_config.training.warmup_steps})"
@@ -387,6 +387,7 @@ def main(job_config: JobConfig):
 
                 # Compute final normalized loss
                 normalized_loss = total_loss / total_tokens
+                losses_since_last_log.append(normalized_loss)
 
                 # sync float8 amaxes and scales
                 float8_handler.sync_float8_amax_and_scale_history(model_parts)
@@ -405,8 +406,6 @@ def main(job_config: JobConfig):
             # calculate float8 dynamic amax/scale for all-parameter for FSDP2
             # it issues a single all-reduce for all parameters at once for better performance
             float8_handler.precompute_float8_dynamic_scale_for_fsdp(model_parts)
-
-            losses_since_last_log.append(normalized_loss)
 
             # log metrics
             if (train_state.step == 1 or train_state.step % job_config.metrics.log_freq == 0):
