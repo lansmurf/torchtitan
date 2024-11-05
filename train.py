@@ -370,8 +370,6 @@ def main(job_config: JobConfig):
                 with train_context(optional_context_parallel_ctx):
                     loss = train_step(model, input_ids, causal_mask, labels, loss_fn)
                     loss = loss / job_config.training.gradient_accumulation_steps  # For gradient scaling
-                    loss.backward()
-                    
                     total_loss += loss.item()
 
                 torch.cuda.synchronize()
