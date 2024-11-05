@@ -85,29 +85,18 @@ def warmup_stable_decay(
     stable_fraction: float,
     current_step: int
 ) -> float:
-    """WSD (Warmup-stable-Decay) learning rate schedule.
-    
-    Args:
-        total_steps: Total number of training steps
-        warmup_fraction: Fraction of steps for warmup (e.g. 0.2)
-        stable_fraction: Fraction of steps to stable max LR (e.g. 0.6)
-        current_step: Current training step
-    """
+    """Modified WSD with +1 trick to avoid zero LR on first step"""
     warmup_steps = int(total_steps * warmup_fraction)
     stable_steps = int(total_steps * stable_fraction)
-    # Decay takes the remainder to ensure we sum to total_steps
     decay_steps = total_steps - warmup_steps - stable_steps
     
     if current_step < warmup_steps:
-        # Linear warmup
-        return float(current_step) / max(1, warmup_steps)
-        
+        # Linear warmup with +1 trick
+        current_step += 1  # Add 1 to avoid zero LR
+        return float(current_step) / (warmup_steps + 1)
     elif current_step < (warmup_steps + stable_steps):
-        # stable at max LR
         return 1.0
-        
     else:
-        # Linear decay
         decay_step = current_step - warmup_steps - stable_steps
         return max(0.0, 1 - (decay_step / decay_steps))
 
