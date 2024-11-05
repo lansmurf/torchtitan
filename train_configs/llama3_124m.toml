@@ -28,7 +28,8 @@ lr = 1.8e-3
 [training]
 batch_size = 45
 seq_len = 1024
-warmup_steps = 100  # lr scheduler warm up, normally 20% of the train steps
+warmup_fraction = 0.2 
+stable_fraction = 0.6
 max_norm = 1.0  # grad norm clipping
 steps = 2000
 data_parallel_replicate_degree = 1

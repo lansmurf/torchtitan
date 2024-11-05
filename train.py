@@ -163,7 +163,9 @@ def main(job_config: JobConfig):
     # loss function to be shared by Pipeline Parallel and SPMD training
     def loss_fn(pred, labels):
         return torch.nn.functional.cross_entropy(
-            pred.flatten(0, 1).float(), labels.flatten(0, 1)
+            pred.flatten(0, 1).float(), 
+            labels.flatten(0, 1),
+            reduction='sum'  # Changed from mean to sum
         )
 
     if job_config.training.compile:
@@ -305,11 +307,16 @@ def main(job_config: JobConfig):
         f"total steps {job_config.training.steps} "
         f"(warmup {job_config.training.warmup_steps})"
     )
+
     with maybe_enable_profiling(
         job_config, global_step=train_state.step
     ) as torch_profiler, maybe_enable_memory_snapshot(
         job_config, global_step=train_state.step
     ) as memory_profiler:
+        
+        total_loss = 0 
+        total_tokens = 0
+
         while train_state.step < job_config.training.steps:
             train_state.step += 1
             gc_handler.run(train_state.step)
@@ -321,9 +328,11 @@ def main(job_config: JobConfig):
             ntokens_since_last_log += labels.numel()
             data_loading_times.append(time.perf_counter() - data_load_start)
 
+            num_tokens = (labels != tokenizer.pad_token_id).sum()
+            total_tokens += num_tokens
+
             input_ids = input_ids.cuda()
             labels = labels.cuda()
-            optimizers.zero_grad()
 
             # apply context parallelism if cp is enabled
             optional_context_parallel_ctx = (
@@ -360,31 +369,46 @@ def main(job_config: JobConfig):
                 step_start = time.perf_counter()
                 with train_context(optional_context_parallel_ctx):
                     loss = train_step(model, input_ids, causal_mask, labels, loss_fn)
+                    loss = loss / job_config.training.gradient_accumulation_steps  # For gradient scaling
+                    loss.backward()
+                    
+                    total_loss += loss.item()
+
                 torch.cuda.synchronize()
                 total_step_ms = (time.perf_counter() - step_start) * 1000
                 
                 # Store timing stats
                 timing_stats['total_step_ms'].append(total_step_ms)
 
-            # clip gradients
-            for m in model_parts:
-                torch.nn.utils.clip_grad_norm_(
-                    m.parameters(), job_config.training.max_norm, foreach=True
-                )
+            if train_state.step % job_config.training.gradient_accumulation_steps == 0:
+                # Now clip the accumulated gradients
+                for m in model_parts:
+                    torch.nn.utils.clip_grad_norm_(
+                        m.parameters(), job_config.training.max_norm, foreach=True
+                    )
 
-            # sync float8 amaxes and scales
-            float8_handler.sync_float8_amax_and_scale_history(model_parts)
+                # Compute final normalized loss
+                normalized_loss = total_loss / total_tokens
 
-            # optimizer step
-            checkpoint.maybe_wait_for_staging()
-            optimizers.step()
-            lr_schedulers.step()
+                # sync float8 amaxes and scales
+                float8_handler.sync_float8_amax_and_scale_history(model_parts)
+
+                # optimizer step
+                checkpoint.maybe_wait_for_staging()
+                optimizers.step()
+                lr_schedulers.step()
+
+                optimizers.zero_grad()
+
+                # Reset accumulators
+                total_loss = 0
+                total_tokens = 0
 
             # calculate float8 dynamic amax/scale for all-parameter for FSDP2
             # it issues a single all-reduce for all parameters at once for better performance
             float8_handler.precompute_float8_dynamic_scale_for_fsdp(model_parts)
 
-            losses_since_last_log.append(loss)
+            losses_since_last_log.append(normalized_loss)
 
             # log metrics
             if (train_state.step == 1 or train_state.step % job_config.metrics.log_freq == 0):

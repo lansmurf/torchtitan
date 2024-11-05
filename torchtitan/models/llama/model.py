@@ -208,7 +208,7 @@ class DifferentialAttention(nn.Module):
         
         attn21 = flex_attention(q2, k2, v1, scale=self.scale, block_mask=mask, enable_gqa=True)
         attn22 = flex_attention(q2, k2, v2, scale=self.scale, block_mask=mask, enable_gqa=True)
-        attn2 = torch.cat([attn21, attn22], dim=-1)
+        attn2 = torch.cat([attn21, attn22], dim=-1) 
 
         # Apply differential attention
         lambda_1 = torch.exp(torch.sum(self.lambda_q1 * self.lambda_k1, dim=-1).float()).type_as(q)

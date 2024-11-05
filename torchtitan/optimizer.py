@@ -79,26 +79,67 @@ def linear_warmup_linear_decay(
     return curr_adjustment
 
 
+def warmup_stable_decay(
+    total_steps: int,
+    warmup_fraction: float,
+    stable_fraction: float,
+    current_step: int
+) -> float:
+    """WSD (Warmup-stable-Decay) learning rate schedule.
+    
+    Args:
+        total_steps: Total number of training steps
+        warmup_fraction: Fraction of steps for warmup (e.g. 0.2)
+        stable_fraction: Fraction of steps to stable max LR (e.g. 0.6)
+        current_step: Current training step
+    """
+    warmup_steps = int(total_steps * warmup_fraction)
+    stable_steps = int(total_steps * stable_fraction)
+    # Decay takes the remainder to ensure we sum to total_steps
+    decay_steps = total_steps - warmup_steps - stable_steps
+    
+    if current_step < warmup_steps:
+        # Linear warmup
+        return float(current_step) / max(1, warmup_steps)
+        
+    elif current_step < (warmup_steps + stable_steps):
+        # stable at max LR
+        return 1.0
+        
+    else:
+        # Linear decay
+        decay_step = current_step - warmup_steps - stable_steps
+        return max(0.0, 1 - (decay_step / decay_steps))
+
 def build_lr_schedulers(optimizers, job_config: JobConfig):
     def _build_lr_scheduler(optimizer):
-        """Build a linear warmup and linear decay scheduler"""
-        warmup_steps = int(job_config.training.warmup_steps)
-        decay_steps = float(max(1, job_config.training.steps - warmup_steps))
+        """Build WSD scheduler with fractional parameters"""
+        total_steps = int(job_config.training.steps)
+        warmup_fraction = float(job_config.training.warmup_fraction)
+        stable_fraction = float(job_config.training.stable_fraction)
+        
+        # Validate fractions
+        if warmup_fraction + stable_fraction >= 1.0:
+            raise ValueError(
+                f"warmup_fraction ({warmup_fraction}) + stable_fraction ({stable_fraction}) "
+                "must be less than 1.0 to leave room for decay"
+            )
+        
         lr_lambda = functools.partial(
-            linear_warmup_linear_decay, warmup_steps, decay_steps
+            warmup_stable_decay,
+            total_steps,
+            warmup_fraction,
+            stable_fraction
         )
-        warmup_scheduler = LambdaLR(optimizer, lr_lambda=lr_lambda)
-        return warmup_scheduler
+        return LambdaLR(optimizer, lr_lambda=lr_lambda)
 
     class SchedulersContainer:
-        """Util for calling step on multiple learning rate schedulers needed for virtual pipeline stages"""
-
         def __init__(self, schedulers):
             self.schedulers = schedulers
 
         def step(self):
-            for schedulers in self.schedulers:
-                schedulers.step()
+            for scheduler in self.schedulers:
+                scheduler.step()
 
     return SchedulersContainer(
         [_build_lr_scheduler(optimizer) for optimizer in optimizers]
