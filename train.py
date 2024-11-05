@@ -328,7 +328,7 @@ def main(job_config: JobConfig):
             ntokens_since_last_log += labels.numel()
             data_loading_times.append(time.perf_counter() - data_load_start)
 
-            num_tokens = (labels != tokenizer.pad_token_id).sum()
+            num_tokens = (labels != tokenizer.pad_id).sum()
             total_tokens += num_tokens
 
             input_ids = input_ids.cuda()
