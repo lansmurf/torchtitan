@@ -334,11 +334,6 @@ class Attention(nn.Module):
         xk = xk.view(bs, seqlen, -1, self.head_dim)
         xv = xv.view(bs, seqlen, -1, self.head_dim)
 
-        # Important: Halve the freqs_cis size to match rotary embedding expectations
-        if freqs_cis is not None:
-            freqs_cis = freqs_cis[:, :freqs_cis.size(1)//2]
-            xq, xk = apply_rotary_emb(xq, xk, freqs_cis)
-
         # repeat k/v heads if n_kv_heads < n_heads
         keys = repeat_kv(xk, self.n_rep)
         values = repeat_kv(xv, self.n_rep)
