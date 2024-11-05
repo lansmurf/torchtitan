@@ -64,7 +64,9 @@ def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor) -> torch.Ten
     #print(f"freqs_cis after slice: {freqs_cis.shape}")
     #print(f"expecting shape: ({seqlen}, {x.shape[-1]})")
     
-    assert freqs_cis.shape == (seqlen, x.shape[-1])
+    if freqs_cis.shape != (seqlen, x.shape[-1]):
+        raise ValueError(f"Shape mismatch: freqs_cis {freqs_cis.shape} vs expected {(seqlen, x.shape[-1])}")
+
     shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
     result = freqs_cis.view(*shape)
     #print(f"result shape: {result.shape}")
