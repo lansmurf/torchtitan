@@ -345,7 +345,7 @@ class Attention(nn.Module):
         keys = keys.transpose(1, 2)
         values = values.transpose(1, 2)
 
-        output = F.scaled_dot_product_attention(xq, keys, values, is_causal=True)
+        output = F.scaled_dot_product_attention(xq, keys, values, is_causal=True, enable_gqa=True)
         output = output.transpose(1, 2).contiguous()
         output = output.view(bs, seqlen, -1)
         return self.wo(output)
