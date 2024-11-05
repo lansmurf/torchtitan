@@ -28,8 +28,8 @@ lr = 1.8e-3
 [training]
 batch_size = 32
 seq_len = 1024
-warmup_fraction = 0.0
-stable_fraction = 0.6
+warmup_fraction = 0.125
+stable_fraction = 0.4
 max_norm = 1.0  # grad norm clipping
 steps = 2000
 data_parallel_replicate_degree = 1
