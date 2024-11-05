@@ -282,6 +282,10 @@ def main(job_config: JobConfig):
 
     checkpoint.reset()
 
+    total_loss = 0
+    total_tokens = 0
+    accumulated_steps = 0
+
     # causal mask def, dont bother since its static. needs to change if using prefixlm tho
     def causal_fn(b, h, q_idx, kv_idx):
         return q_idx >= kv_idx
@@ -314,11 +318,9 @@ def main(job_config: JobConfig):
         job_config, global_step=train_state.step
     ) as memory_profiler:
         
-        total_loss = 0 
-        total_tokens = 0
-
         while train_state.step < job_config.training.steps:
             train_state.step += 1
+            accumulated_steps += 1
             gc_handler.run(train_state.step)
 
             # get batch
@@ -369,46 +371,46 @@ def main(job_config: JobConfig):
                 step_start = time.perf_counter()
                 with train_context(optional_context_parallel_ctx):
                     loss = train_step(model, input_ids, causal_mask, labels, loss_fn)
-                    loss = loss / job_config.training.gradient_accumulation_steps  # For gradient scaling
                     total_loss += loss.item()
 
                 torch.cuda.synchronize()
                 total_step_ms = (time.perf_counter() - step_start) * 1000
-                
-                # Store timing stats
                 timing_stats['total_step_ms'].append(total_step_ms)
 
-            if train_state.step % job_config.training.gradient_accumulation_steps == 0:
-                # Now clip the accumulated gradients
+            if accumulated_steps == job_config.training.gradient_accumulation_steps:
+                # Now compute the properly normalized loss for the entire effective batch
+                if total_tokens > 0:  # Protect against division by zero
+                    normalized_loss = total_loss / total_tokens
+                    losses_since_last_log.append(normalized_loss)
+                    
+                    # Scale the gradients by the gradient accumulation steps
+                    for param in model.parameters():
+                        if param.grad is not None:
+                            param.grad.div_(job_config.training.gradient_accumulation_steps)
+                
+                # Clip gradients after scaling
                 for m in model_parts:
                     torch.nn.utils.clip_grad_norm_(
                         m.parameters(), job_config.training.max_norm, foreach=True
                     )
-
-                # Compute final normalized loss
-                normalized_loss = total_loss / total_tokens
-                losses_since_last_log.append(normalized_loss)
-
-                # sync float8 amaxes and scales
-                float8_handler.sync_float8_amax_and_scale_history(model_parts)
-
-                # optimizer step
+                
+                # Optimizer step and zero grad
                 checkpoint.maybe_wait_for_staging()
                 optimizers.step()
                 lr_schedulers.step()
-
                 optimizers.zero_grad()
-
+                
                 # Reset accumulators
                 total_loss = 0
                 total_tokens = 0
+                accumulated_steps = 0
 
             # calculate float8 dynamic amax/scale for all-parameter for FSDP2
             # it issues a single all-reduce for all parameters at once for better performance
             float8_handler.precompute_float8_dynamic_scale_for_fsdp(model_parts)
 
             # log metrics
-            if (train_state.step == 1 or train_state.step % job_config.metrics.log_freq == 0):
+            if (train_state.step == 1 or train_state.step % job_config.metrics.log_freq == 0) and losses_since_last_log:
                 losses = losses_since_last_log
                 avg_loss, max_loss = sum(losses) / len(losses), max(losses)
                 if parallel_dims.dp_enabled:
