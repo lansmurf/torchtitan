@@ -409,7 +409,7 @@ def main(job_config: JobConfig):
 
             # log metrics
             if (train_state.step == 1 or train_state.step % job_config.metrics.log_freq == 0):
-                losses = [loss.item() for loss in losses_since_last_log]
+                losses = losses_since_last_log
                 avg_loss, max_loss = sum(losses) / len(losses), max(losses)
                 if parallel_dims.dp_enabled:
                     global_avg_loss, global_max_loss = (
