@@ -26,7 +26,7 @@ name = "AdamW"
 lr = 1.8e-3
 
 [training]
-batch_size = 16
+batch_size = 32
 seq_len = 1024
 warmup_fraction = 0.0
 stable_fraction = 0.6
@@ -38,7 +38,7 @@ tensor_parallel_degree = 1  # 8-way TP
 compile = true
 dataset = "smollm1"
 seed = 42
-gradient_accumulation_steps = 16
+gradient_accumulation_steps = 8
 
 [experimental]
 context_parallel_degree = 1
