@@ -36,7 +36,7 @@ data_parallel_replicate_degree = 1
 data_parallel_shard_degree = 2
 tensor_parallel_degree = 1  # 8-way TP
 compile = true
-dataset = "smollm1"
+dataset = "fineweb"
 seed = 42
 gradient_accumulation_steps = 8
 
