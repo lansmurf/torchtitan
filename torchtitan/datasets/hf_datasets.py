@@ -15,8 +15,8 @@ from datasets.distributed import split_dataset_by_node
 _supported_datasets = {
     "c4_test": "test/assets/c4_test",
     "c4": "allenai/c4",
-    "smollm1": ("HuggingFaceTB/smollm-corpus", "fineweb-edu-dedup"),
-    "fineweb-edu": "HuggingFaceFW/fineweb"
+    "fineweb-edu-deduped": ("HuggingFaceTB/smollm-corpus", "fineweb-edu-dedup"),
+    "fineweb": "HuggingFaceFW/fineweb"
 }
 
 class HuggingFaceDataset(IterableDataset, Stateful):
