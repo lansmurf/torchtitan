@@ -13,6 +13,17 @@ __all__ = ["Transformer"]
 
 llama2_configs = {
     "debugmodel": ModelArgs(dim=256, n_layers=8, n_heads=16),
+    "124M": ModelArgs(
+    dim=768,
+    n_layers=12,
+    n_heads=6,
+    n_kv_heads=6,
+    multiple_of=128,
+    ffn_dim_multiplier=1.0,
+    norm_eps=1e-5,
+    rope_theta=500000.0,
+    max_seq_len=1024,
+    ),
     "271M": ModelArgs(dim=1024, n_layers=16, n_heads=8),
     "1B": ModelArgs(dim=2048, n_layers=18, n_heads=16),
     "7B": ModelArgs(dim=4096, n_layers=32, n_heads=32),
@@ -41,7 +52,6 @@ llama3_configs = {
         norm_eps=1e-5,
         rope_theta=500000.0,
         max_seq_len=1024,
-        vocab_size=50304,
         ),
         "1B": ModelArgs(
         dim=2048,
@@ -52,7 +62,6 @@ llama3_configs = {
         ffn_dim_multiplier=1.0,  # We'll explicitly set intermediate_size
         norm_eps=1e-5,
         rope_theta=500000.0,
-        vocab_size=128256,
         ),
     "8B": ModelArgs(
         dim=4096,
