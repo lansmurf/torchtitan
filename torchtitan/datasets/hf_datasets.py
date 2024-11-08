@@ -52,7 +52,7 @@ class HuggingFaceDataset(IterableDataset, Stateful):
             ds = load_dataset(repo_name, subset, split="train", streaming=True)
         elif dataset_name == "fineweb":
             repo_name = _supported_datasets[dataset_name]
-            logger.info(f"Loading Fineweb dataset {subset} from {repo_name}")
+            logger.info(f"Loading Fineweb dataset from {repo_name}")
             ds = load_dataset(repo_name, name="CC-MAIN-2024-10", split="train", streaming=True)
         elif dataset_name == "c4":
             path = dataset_path or _supported_datasets[dataset_name]
