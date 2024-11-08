@@ -38,7 +38,7 @@ tensor_parallel_degree = 1  # 8-way TP
 compile = true
 dataset = "fineweb"
 seed = 42
-gradient_accumulation_steps = 8
+gradient_accumulation_steps = 4
 
 [experimental]
 context_parallel_degree = 1
