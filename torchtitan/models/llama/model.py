@@ -382,9 +382,7 @@ class FeedForward(nn.Module):
         self.w3 = nn.Linear(dim, hidden_dim, bias=False)
 
     def forward(self, x):
-        x = F.relu(self.w1(x)).square()
-        x = x * self.w3(x)
-        return self.w2(x)
+        return self.w2(F.relu(self.w1(x)).square() * self.w3(x))
 
     def init_weights(self, init_std: float):
         nn.init.trunc_normal_(self.w1.weight, mean=0.0, std=0.02)
