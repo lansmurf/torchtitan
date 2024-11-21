@@ -35,6 +35,11 @@ class ModelArgs:
     # `False`, each uses the total number of transformer blocks
     depth_init: bool = True
     norm_type: str = "rmsnorm"
+    
+    # Mixture of Depths parameters
+    use_mixture_of_depths: bool = False  # Toggle for MoD
+    capacity_ratio: float = 1.0  # Default capacity ratio (process all tokens)
+    route_every_n_layers: int = 1  # Route every n layers (1 means route every layer)
 
 def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0) -> torch.Tensor:
     #print(f"\nprecompute_freqs_cis input dims: dim={dim}, end={end}")

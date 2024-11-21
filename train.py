@@ -117,6 +117,7 @@ def main(job_config: JobConfig):
         job_config.training.seq_len,
         dp_degree,
         dp_rank,
+        job_config.training.gradient_accumulation_steps
     )
 
     # build model (using meta init)
@@ -283,9 +284,9 @@ def main(job_config: JobConfig):
 
     checkpoint.reset()
 
-    total_loss = 0
-    total_tokens = 0
+    # start of train loop
     accumulated_steps = 0
+    total_tokens_in_batch = None
 
     # causal mask def, dont bother since its static. needs to change if using prefixlm tho
     def causal_fn(b, h, q_idx, kv_idx):
@@ -320,6 +321,11 @@ def main(job_config: JobConfig):
     ) as memory_profiler:
         
         while train_state.step < job_config.training.steps:
+            if accumulated_steps == 0:
+                # Get total tokens for the next G microbatches
+                total_tokens_in_batch = data_loader.dataset.get_next_total_tokens()
+                optimizers.zero_grad()  # Clear grads at start of new cycle
+
             train_state.step += 1
             accumulated_steps += 1
             gc_handler.run(train_state.step)
@@ -370,98 +376,96 @@ def main(job_config: JobConfig):
             else:
                 # Non-PP forward / backward
                 step_start = time.perf_counter()
+                
+                # At start of new accumulation cycle, get total tokens and clear grads
+                if accumulated_steps == 0:
+                    total_tokens_in_batch = data_loader.dataset.get_next_total_tokens()
+                    optimizers.zero_grad()
+
                 with train_context(optional_context_parallel_ctx):
                     pred = model(input_ids, causal_mask)
                     loss = loss_fn(pred, labels)
                     # pred.shape=(bs, seq_len, vocab_size)
-                    # need to free to before bwd to avoid peaking memory
-                    del pred
-                    loss.backward()
-                    total_loss += loss.item()
+                    del pred  # Free memory before backward
+                    
+                    # Scale loss properly: loss * G / total_tokens 
+                    scaled_loss = loss * job_config.training.gradient_accumulation_steps / total_tokens_in_batch
+                    scaled_loss.backward()
+                    
+                    # Store unscaled per-token loss for metrics
+                    num_tokens = (labels != tokenizer.pad_id).sum().item()
+                    losses_since_last_log.append(loss.item() / num_tokens)
 
                 torch.cuda.synchronize()
                 total_step_ms = (time.perf_counter() - step_start) * 1000
                 timing_stats['total_step_ms'].append(total_step_ms)
 
-            if accumulated_steps == job_config.training.gradient_accumulation_steps:
-                # Now compute the properly normalized loss for the entire effective batch
-                if total_tokens > 0:  # Protect against division by zero
-                    normalized_loss = total_loss / total_tokens
-                    losses_since_last_log.append(normalized_loss)
+                accumulated_steps += 1
+                
+                if accumulated_steps == job_config.training.gradient_accumulation_steps:
+                    # Clip gradients (already properly scaled from backward)
+                    clip_grad_norm_(
+                        [p for m in model_parts for p in m.parameters()],
+                        job_config.training.max_norm,
+                        foreach=True,
+                        pp_mesh=pp_mesh if parallel_dims.pp_enabled else None,
+                    )
+
+                    # sync float8 amaxes and scales
+                    float8_handler.sync_float8_amax_and_scale_history(model_parts)
+
+                    # optimizer step
+                    checkpoint.maybe_wait_for_staging()
+                    optimizers.step()
+                    lr_schedulers.step()
                     
-                    # Scale the gradients by the gradient accumulation steps
-                    for param in model.parameters():
-                        if param.grad is not None:
-                            param.grad.div_(job_config.training.gradient_accumulation_steps)
-                
-                # Clip gradients after scaling
-                clip_grad_norm_(
-                    [p for m in model_parts for p in m.parameters()],
-                    job_config.training.max_norm,
-                    foreach=True,
-                    pp_mesh=pp_mesh if parallel_dims.pp_enabled else None,
-                )
-
-                # sync float8 amaxes and scales
-                float8_handler.sync_float8_amax_and_scale_history(model_parts)
-
-                # optimizer step
-                checkpoint.maybe_wait_for_staging()
-                optimizers.step()
-                lr_schedulers.step()
-                optimizers.zero_grad()
-                
-                # Reset accumulators
-                total_loss = 0
-                total_tokens = 0
-                accumulated_steps = 0
+                   # Reset accumulation counter
+                    accumulated_steps = 0
 
             # calculate float8 dynamic amax/scale for all-parameter for FSDP2
             # it issues a single all-reduce for all parameters at once for better performance
             float8_handler.precompute_float8_dynamic_scale_for_fsdp(model_parts)
-            # log metrics
+            
+            # Log metrics periodically
             if (train_state.step == 1 or train_state.step % job_config.metrics.log_freq == 0) and losses_since_last_log:
-                losses = losses_since_last_log
-                avg_loss, max_loss = sum(losses) / len(losses), max(losses)
+                # Calculate loss statistics across logged steps
+                avg_loss = sum(losses_since_last_log) / len(losses_since_last_log)
+                max_loss = max(losses_since_last_log)
+                
+                # Sync across DP ranks if needed
                 if parallel_dims.dp_enabled:
-                    global_avg_loss, global_max_loss = (
-                        utils.dist_mean(avg_loss, dp_mesh),
-                        utils.dist_max(max_loss, dp_mesh),
-                    )
+                    global_avg_loss = utils.dist_mean(avg_loss, dp_mesh)
+                    global_max_loss = utils.dist_max(max_loss, dp_mesh)
                 else:
-                    global_avg_loss, global_max_loss = avg_loss, max_loss
+                    global_avg_loss = avg_loss
+                    global_max_loss = max_loss
 
-                # Calculate timing averages
-                avg_total = sum(timing_stats['total_step_ms'][-job_config.metrics.log_freq:]) / job_config.metrics.log_freq
-
-                # update train state
+                # Update training state
                 train_state.log_steps.append(train_state.step)
                 train_state.global_avg_losses.append(global_avg_loss)
                 train_state.global_max_losses.append(global_max_loss)
 
+                # Calculate timing metrics
                 time_delta = time.perf_counter() - time_last_log
-
-                # tokens per second, abbr. as wps by convention
-                wps = ntokens_since_last_log / (
-                    time_delta * parallel_dims.non_data_parallel_size
-                )
+                wps = ntokens_since_last_log / (time_delta * parallel_dims.non_data_parallel_size)
                 mfu = 100 * num_flop_per_token * wps / gpu_peak_flops
-
-                time_end_to_end = time_delta / job_config.metrics.log_freq
+                
+                avg_step_ms = sum(timing_stats['total_step_ms'][-job_config.metrics.log_freq:]) / job_config.metrics.log_freq
                 time_data_loading = sum(data_loading_times) / len(data_loading_times)
-                time_data_loading_pct = 100 * sum(data_loading_times) / time_delta
-
+                
+                # Get GPU stats
                 gpu_mem_stats = gpu_memory_monitor.get_peak_stats()
 
+                # Log all metrics
                 metrics = {
                     "loss_metrics/global_avg_loss": global_avg_loss,
                     "loss_metrics/global_max_loss": global_max_loss,
                     "wps": wps,
                     "mfu(%)": mfu,
-                    "time_metrics/end_to_end(s)": time_end_to_end,
+                    "time_metrics/end_to_end(s)": time_delta / job_config.metrics.log_freq,
                     "time_metrics/data_loading(s)": time_data_loading,
-                    "time_metrics/data_loading(%)": time_data_loading_pct,
-                    "time_metrics/total_step_ms": avg_total,
+                    "time_metrics/data_loading(%)": 100 * sum(data_loading_times) / time_delta,
+                    "time_metrics/total_step_ms": avg_step_ms,
                     "memory/max_active(GiB)": gpu_mem_stats.max_active_gib,
                     "memory/max_active(%)": gpu_mem_stats.max_active_pct,
                     "memory/max_reserved(GiB)": gpu_mem_stats.max_reserved_gib,
@@ -471,7 +475,7 @@ def main(job_config: JobConfig):
                 }
                 metric_logger.log(metrics, step=train_state.step)
 
-                # Update logging to include timing info
+                # Log readable summary
                 logger.info(
                     f"{color.cyan}step: {train_state.step:2}  "
                     f"{color.green}loss: {global_avg_loss:7.4f}  "
@@ -479,33 +483,32 @@ def main(job_config: JobConfig):
                     f"({gpu_mem_stats.max_reserved_pct:.2f}%)  "
                     f"{color.blue}wps: {round(wps):,}  "
                     f"{color.magenta}mfu: {mfu:.2f}%  "
-                    f"total: {avg_total:.1f}ms{color.reset}"
+                    f"total: {avg_step_ms:.1f}ms{color.reset}"
                 )
 
+                # Reset logging accumulators
                 losses_since_last_log.clear()
                 ntokens_since_last_log = 0
                 data_loading_times.clear()
                 time_last_log = time.perf_counter()
                 gpu_memory_monitor.reset_peak_stats()
 
-            checkpoint.save(
-                train_state.step, force=(train_state.step == job_config.training.steps)
-            )
-
-            # signal the profiler that the next profiling step has started
+            # Handle checkpointing and profiling
+            checkpoint.save(train_state.step, force=(train_state.step == job_config.training.steps))
+            
             if torch_profiler:
                 torch_profiler.step()
             if memory_profiler:
                 memory_profiler.step()
 
-            # reduce timeout after first train step for faster signal
-            # (assuming lazy init and compilation are finished)
+            # Reduce timeout after first step (post init/compile)
             if train_state.step == 1:
                 utils.set_pg_timeouts(
                     timeout=timedelta(seconds=job_config.comm.train_timeout_seconds),
                     world_mesh=world_mesh,
                 )
 
+    # Final cleanup
     if torch.distributed.get_rank() == 0:
         logger.info("Sleeping 2 seconds for other ranks to complete")
         time.sleep(2)
