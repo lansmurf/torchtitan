@@ -31,7 +31,6 @@ class HuggingFaceDataset(IterableDataset, Stateful):
         infinite: bool = False,
         seed: Optional[int] = 42,
         buffer_size: int = 10_000,  # Added buffer_size parameter
-        accum_steps: int = 1,  # Add accumulation steps
     ) -> None:
         if dataset_name not in _supported_datasets:
             raise ValueError(
@@ -45,8 +44,6 @@ class HuggingFaceDataset(IterableDataset, Stateful):
         self.infinite = infinite
         self.world_size = world_size
         self.rank = rank
-        self.accum_steps = accum_steps
-        self._token_counts = []  # Track counts for upcoming batches
 
         # Load dataset
         if dataset_name == "smollm1":
@@ -112,39 +109,6 @@ class HuggingFaceDataset(IterableDataset, Stateful):
             return iter([])
         return iter(self._data.skip(self._sample_idx))
 
-    def _fill_buffer(self, min_size: int):
-        """Fill buffer to at least min_size tokens"""
-        while len(self._all_tokens) < min_size:
-            try:
-                sample = next(self._get_data_iter())
-                text = sample["text"] if isinstance(sample["text"], str) else sample["text"].decode('utf-8')
-                tokens = self._tokenizer.encode(text, bos=True, eos=True)
-                self._all_tokens.extend(tokens)
-                self._sample_idx += 1
-            except StopIteration:
-                if not self.infinite:
-                    break
-                self._sample_idx = 0
-                
-    def get_next_total_tokens(self) -> int:
-        """Get total tokens that will be processed in next accum_steps batches"""
-        needed_tokens = (1 + self.seq_len) * self.accum_steps
-        self._fill_buffer(needed_tokens)
-        
-        # Count tokens for each batch that will be yielded
-        token_counts = []
-        remaining = self._all_tokens.copy()  # Don't modify actual buffer
-        
-        for _ in range(self.accum_steps):
-            if len(remaining) < (1 + self.seq_len):
-                break
-            # Count non-padding tokens in this batch
-            batch_tokens = remaining[:(1 + self.seq_len)]
-            token_counts.append(len(batch_tokens) - 1)  # -1 since we yield x[:-1], x[1:]
-            remaining = remaining[(1 + self.seq_len):]
-            
-        return sum(token_counts)
-
     def state_dict(self):
         return {
             "sample_idx": self._sample_idx,
@@ -190,11 +154,10 @@ def build_hf_data_loader(
     seq_len: int,
     world_size,
     rank,
-    accum: int,
     infinite: bool = True,
 ):
     hf_ds = HuggingFaceDataset(
-        dataset_name, dataset_path, tokenizer, seq_len, world_size, rank, accum, infinite
+        dataset_name, dataset_path, tokenizer, seq_len, world_size, rank, infinite
     )
 
     return DPAwareDataLoader(rank, hf_ds, batch_size=batch_size)
