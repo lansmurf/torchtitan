@@ -27,6 +27,7 @@ from torchtitan.parallelisms import (
     ParallelDims,
 )
 from torchtitan.profiling import maybe_enable_memory_snapshot, maybe_enable_profiling
+from torchtitan.utils import clip_grad_norm_
 from torch.nn.attention.flex_attention import create_block_mask, BlockMask
 import time
 
@@ -370,7 +371,12 @@ def main(job_config: JobConfig):
                 # Non-PP forward / backward
                 step_start = time.perf_counter()
                 with train_context(optional_context_parallel_ctx):
-                    loss = train_step(model, input_ids, causal_mask, labels, loss_fn)
+                    pred = model(input_ids, causal_mask)
+                    loss = loss_fn(pred, labels)
+                    # pred.shape=(bs, seq_len, vocab_size)
+                    # need to free to before bwd to avoid peaking memory
+                    del pred
+                    loss.backward()
                     total_loss += loss.item()
 
                 torch.cuda.synchronize()
@@ -389,12 +395,17 @@ def main(job_config: JobConfig):
                             param.grad.div_(job_config.training.gradient_accumulation_steps)
                 
                 # Clip gradients after scaling
-                for m in model_parts:
-                    torch.nn.utils.clip_grad_norm_(
-                        m.parameters(), job_config.training.max_norm, foreach=True
-                    )
-                
-                # Optimizer step and zero grad
+                clip_grad_norm_(
+                    [p for m in model_parts for p in m.parameters()],
+                    job_config.training.max_norm,
+                    foreach=True,
+                    pp_mesh=pp_mesh if parallel_dims.pp_enabled else None,
+                )
+
+                # sync float8 amaxes and scales
+                float8_handler.sync_float8_amax_and_scale_history(model_parts)
+
+                # optimizer step
                 checkpoint.maybe_wait_for_staging()
                 optimizers.step()
                 lr_schedulers.step()
@@ -408,7 +419,6 @@ def main(job_config: JobConfig):
             # calculate float8 dynamic amax/scale for all-parameter for FSDP2
             # it issues a single all-reduce for all parameters at once for better performance
             float8_handler.precompute_float8_dynamic_scale_for_fsdp(model_parts)
-
             # log metrics
             if (train_state.step == 1 or train_state.step % job_config.metrics.log_freq == 0) and losses_since_last_log:
                 losses = losses_since_last_log
