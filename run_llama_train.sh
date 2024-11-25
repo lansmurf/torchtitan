@@ -27,16 +27,32 @@ if [ "$NGPU" -eq "0" ]; then
 fi
 
 LOG_RANK=${LOG_RANK:-0}
-CONFIG_FILE=${CONFIG_FILE:-"./train_configs/debug_model.toml"}
+DEFAULT_CONFIG="./train_configs/debug_model.toml"
 
-overrides=""
-if [ $# -ne 0 ]; then
+# Parse command line arguments to check for a config file
+config_specified=false
+for arg in "$@"; do
+    if [[ $arg == *"config_file"* ]]; then
+        config_specified=true
+        break
+    fi
+done
+
+# If no config file is specified in the arguments, use the default
+if [ "$config_specified" = false ]; then
+    CONFIG_FILE=${CONFIG_FILE:-"$DEFAULT_CONFIG"}
+    overrides="--job.config_file ${CONFIG_FILE}"
+    if [ $# -ne 0 ]; then
+        overrides="$overrides $*"
+    fi
+else
     overrides="$*"
 fi
 
 echo "Running training with $NGPU GPU(s)"
+echo "Using configuration: ${CONFIG_FILE:-"specified in overrides"}"
 
 PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True" \
 torchrun --nproc_per_node=${NGPU} --rdzv_backend c10d --rdzv_endpoint="localhost:0" \
 --local-ranks-filter ${LOG_RANK} --role rank --tee 3 \
-train.py --job.config_file ${CONFIG_FILE} $overrides
+train.py $overrides
