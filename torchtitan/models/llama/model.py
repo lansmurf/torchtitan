@@ -528,6 +528,12 @@ class TransformerBlock(nn.Module):
         else:
             # Regular path for all other layers
             return h + self.feed_forward(self.ffn_norm(h))
+        
+    def init_weights(self):
+            for norm in (self.attention_norm, self.ffn_norm):
+                norm.reset_parameters()
+            self.attention.init_weights(self.weight_init_std)
+            self.feed_forward.init_weights(self.weight_init_std)
 
 class FusedFeedForward(nn.Module):
     def __init__(
