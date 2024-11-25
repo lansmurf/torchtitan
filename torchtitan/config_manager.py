@@ -158,15 +158,15 @@ class JobConfig:
         self.parser.add_argument(
             "--model.flavor",
             type=str,
-            default="debugmodel",
-            help="Which model config to train",
+            default=None,  # Changed default to None
+            help="Which model config to train (optional if model.args is provided)",
         )
         self.parser.add_argument(
-                    "--model.args",
-                    type=dict,
-                    default=None,
-                    help="Direct model arguments (optional if model.flavor is provided)",
-                )
+            "--model.args",
+            type=dict,
+            default=None,
+            help="Direct model arguments (optional if model.flavor is provided)",
+        )
         self.parser.add_argument(
             "--model.norm_type",
             type=str,
@@ -567,8 +567,8 @@ class JobConfig:
     def parse_args(self, args_list: list = sys.argv[1:]):
         args, cmd_args = self.parse_args_from_command_line(args_list)
         config_file = getattr(args, "job.config_file", None)
-        # build up a two level dict
         args_dict = self._args_to_two_level_dict(args)
+
         if config_file is not None:
             try:
                 with open(config_file, "rb") as f:
@@ -576,72 +576,71 @@ class JobConfig:
                     
                     for k, v in toml_config.items():
                         if k in args_dict:
-                            # Special handling for model section to capture nested args
                             if k == "model" and isinstance(v, dict):
-                                # Extract nested args if they exist
+                                # Preserve any existing args
+                                model_args = args_dict[k].get("args", None)
+                                # Update with TOML config
+                                args_dict[k].update(v)
+                                # If there were model args in TOML, they take precedence
                                 if "args" in v:
                                     args_dict[k]["args"] = v["args"]
-                                args_dict[k] |= {key: value for key, value in v.items() if key != "args"}
+                                # Otherwise restore any existing args
+                                elif model_args is not None:
+                                    args_dict[k]["args"] = model_args
                             else:
-                                args_dict[k] |= v
+                                args_dict[k].update(v)
                         else:
                             args_dict[k] = v
-
-                    # Log the model config for debugging
-                    if "model" in args_dict:
-                        logger.info(f"Loaded model config: {args_dict['model']}")
-                            
             except (FileNotFoundError, tomllib.TOMLDecodeError) as e:
-                logger.exception(
-                    f"Error while loading the configuration file: {config_file}"
-                )
+                logger.exception(f"Error while loading the configuration file: {config_file}")
                 logger.exception(f"Error details: {str(e)}")
                 raise e
 
-        # if split-points came from 'args' (from cmd line) it would have already been parsed into a list by that parser
-        if (
-            "experimental" in args_dict
-            and "pipeline_parallel_split_points" in args_dict["experimental"]
-            and isinstance(
-                args_dict["experimental"]["pipeline_parallel_split_points"], str
-            )
-        ):
-            exp = args_dict["experimental"]
-            exp["pipeline_parallel_split_points"] = string_list(
-                exp["pipeline_parallel_split_points"]
-            )
-
-        # override args dict with cmd_args
+        # Override with command line arguments
         cmd_args_dict = self._args_to_two_level_dict(cmd_args)
         for section, section_args in cmd_args_dict.items():
             for k, v in section_args.items():
-                args_dict[section][k] = v
+                if section == "model" and k == "args" and v is not None:
+                    # For model args from command line, merge with existing args if any
+                    existing_args = args_dict[section].get("args", {})
+                    if isinstance(existing_args, dict):
+                        existing_args.update(v)
+                        args_dict[section][k] = existing_args
+                    else:
+                        args_dict[section][k] = v
+                else:
+                    args_dict[section][k] = v
 
+        # Create attribute classes
         for k, v in args_dict.items():
             class_type = type(k.title(), (), v)
             setattr(self, k, class_type())
-        
-        # Debug log before validation
-        logger.info(f"Model config before validation: {getattr(self, 'model', None)}")
+
+        logger.info(f"Final model configuration: {vars(self.model)}")
         self._validate_config()
 
     def _validate_config(self) -> None:
         """Validate the configuration ensuring required fields are present and consistent."""
-        assert self.model.name, "Model name must be specified"
-        assert self.model.tokenizer_path, "Tokenizer path must be specified"
+        if not hasattr(self.model, 'name'):
+            raise ValueError("Model name must be specified")
         
-        # Debug log inside validation
-        logger.info(f"Checking model config in validation: hasattr(args)={hasattr(self.model, 'args')}")
-        if hasattr(self.model, 'args'):
-            logger.info(f"Model args content: {self.model.args}")
-        
+        if not hasattr(self.model, 'tokenizer_path'):
+            raise ValueError("Tokenizer path must be specified")
+
         # Check for either flavor or args
         has_flavor = hasattr(self.model, 'flavor') and self.model.flavor is not None
         has_args = hasattr(self.model, 'args') and self.model.args is not None
-        
+
         if not (has_flavor or has_args):
             raise ValueError("Either model.flavor or model.args must be specified")
 
+        if has_args:
+            required_args = {'dim', 'n_layers', 'n_heads'}
+            missing_args = required_args - set(self.model.args.keys())
+            if missing_args:
+                raise ValueError(f"Missing required model arguments: {missing_args}")
+
+        logger.info(f"Configuration validated successfully")
 
     def _args_to_two_level_dict(self, args: argparse.Namespace) -> defaultdict:
         args_dict = defaultdict(defaultdict)
