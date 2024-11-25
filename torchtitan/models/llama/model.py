@@ -522,9 +522,26 @@ class TransformerBlock(nn.Module):
         
         # Only use fused path for last layer when fused head is enabled
         if self.is_last_layer and self.use_fused_head:
-            h_ffn = self.feed_forward(self.ffn_norm(h))
+            # Before FFN
+            h_normed = self.ffn_norm(h)
+            print(f"Step {train_state.step} Pre-FFN norm stats:", 
+                h_normed.mean().item(), h_normed.std().item())
+            
+            # After FFN 
+            h_ffn = self.feed_forward(h_normed)
+            print(f"Step {train_state.step} Post-FFN stats:", 
+                h_ffn.mean().item(), h_ffn.std().item(),
+                "\nFFN w1 norm:", self.feed_forward.w1.weight.norm().item())
+            
+            # After hidden norm
             h_norm = self.hidden_norm(h_ffn)
-            return h_norm  # Return normalized hidden state directly
+            print(f"Step {train_state.step} Post-hidden norm stats:",
+                h_norm.mean().item(), h_norm.std().item())
+            
+            # Sample of actual values to verify they're changing
+            print(f"Sample outputs:", h_norm[0,0,:5].tolist())
+            
+            return h_norm
         else:
             # Regular path for all other layers
             return h + self.feed_forward(self.ffn_norm(h))
