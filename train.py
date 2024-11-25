@@ -121,7 +121,24 @@ def main(job_config: JobConfig):
 
     # build model (using meta init)
     model_cls = model_name_to_cls[model_name]
-    model_config = models_config[model_name][job_config.model.flavor]
+    
+    # Get model configuration
+    if hasattr(job_config.model, 'args') and job_config.model.args is not None:
+        logger.info(f"Using custom model arguments: {job_config.model.args}")
+        # Convert dict to ModelArgs
+        from torchtitan.models.llama.model import ModelArgs  # Import at top of file in practice
+        if isinstance(job_config.model.args, dict):
+            model_config = ModelArgs(**job_config.model.args)
+        else:
+            model_config = job_config.model.args
+    else:
+        # Fallback to flavor-based configuration
+        if not hasattr(job_config.model, 'flavor') or job_config.model.flavor is None:
+            raise ValueError("Either model.flavor or model.args must be specified")
+        
+        logger.info(f"Using predefined model flavor: {job_config.model.flavor}")
+        model_config = models_config[model_name][job_config.model.flavor]
+
     # set the model configs from training inputs:
     # 1. norm type to decide which norm layer to use
     # 2. vocab size from tokenizer
@@ -130,7 +147,7 @@ def main(job_config: JobConfig):
     model_config.vocab_size = tokenizer.n_words
     model_config.max_seq_len = job_config.training.seq_len
 
-    logger.info(f"Building {model_name} {job_config.model.flavor} with {model_config}")
+    logger.info(f"Building {model_name} with config: {model_config}")
     with torch.device("meta"):
         model = model_cls.from_model_args(model_config)
 
