@@ -46,13 +46,6 @@ class ModelArgs:
     route_every_n_layers: int = 1  # Route every n layers (1 means route every layer)
 
 
-Y
-Ok but use the multiple of arg in the s_curve constrained so we round to whatever nearest multiple of
-
-
-python
-
-Copy
 def get_ffn_scaling_fn(name: Optional[str]):
    if name is None:
        return lambda layer_id, n_layers, base_dim, model_dim, multiple_of: base_dim
