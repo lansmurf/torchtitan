@@ -54,7 +54,7 @@ class JobConfig:
     def __init__(self):
         # main parser
         self.parser = argparse.ArgumentParser(description="torchtitan arg parser.")
-
+        
         self.parser.add_argument(
             "--job.config_file",
             type=str,
@@ -573,16 +573,21 @@ class JobConfig:
             try:
                 with open(config_file, "rb") as f:
                     toml_config = tomllib.load(f)
-                    for k, v in toml_config.items():
-                        if k in args_dict:
-                            args_dict[k] |= v
-                        else:
-                            args_dict[k] = v
-                            
-                    # Remove flavor if args exists in model section
-                    if "model" in args_dict and "args" in args_dict["model"]:
-                        args_dict["model"].pop("flavor", None)
+                    
+                    # Handle model.args section if it exists as a nested table
+                    if "model.args" in toml_config:
+                        if "model" not in args_dict:
+                            args_dict["model"] = {}
+                        args_dict["model"]["args"] = toml_config["model.args"]
                         
+                    # Handle all other sections
+                    for k, v in toml_config.items():
+                        if not k.startswith("model."):  # Skip model.args since we handled it
+                            if k in args_dict:
+                                args_dict[k] |= v
+                            else:
+                                args_dict[k] = v
+                            
             except (FileNotFoundError, tomllib.TOMLDecodeError) as e:
                 logger.exception(
                     f"Error while loading the configuration file: {config_file}"
