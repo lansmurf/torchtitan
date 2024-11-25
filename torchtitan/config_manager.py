@@ -54,7 +54,7 @@ class JobConfig:
     def __init__(self):
         # main parser
         self.parser = argparse.ArgumentParser(description="torchtitan arg parser.")
-        
+
         self.parser.add_argument(
             "--job.config_file",
             type=str,
@@ -574,19 +574,22 @@ class JobConfig:
                 with open(config_file, "rb") as f:
                     toml_config = tomllib.load(f)
                     
-                    # Handle model.args section if it exists as a nested table
-                    if "model.args" in toml_config:
-                        if "model" not in args_dict:
-                            args_dict["model"] = {}
-                        args_dict["model"]["args"] = toml_config["model.args"]
-                        
-                    # Handle all other sections
                     for k, v in toml_config.items():
-                        if not k.startswith("model."):  # Skip model.args since we handled it
-                            if k in args_dict:
-                                args_dict[k] |= v
+                        if k in args_dict:
+                            # Special handling for model section to capture nested args
+                            if k == "model" and isinstance(v, dict):
+                                # Extract nested args if they exist
+                                if "args" in v:
+                                    args_dict[k]["args"] = v["args"]
+                                args_dict[k] |= {key: value for key, value in v.items() if key != "args"}
                             else:
-                                args_dict[k] = v
+                                args_dict[k] |= v
+                        else:
+                            args_dict[k] = v
+
+                    # Log the model config for debugging
+                    if "model" in args_dict:
+                        logger.info(f"Loaded model config: {args_dict['model']}")
                             
             except (FileNotFoundError, tomllib.TOMLDecodeError) as e:
                 logger.exception(
@@ -617,12 +620,20 @@ class JobConfig:
         for k, v in args_dict.items():
             class_type = type(k.title(), (), v)
             setattr(self, k, class_type())
+        
+        # Debug log before validation
+        logger.info(f"Model config before validation: {getattr(self, 'model', None)}")
         self._validate_config()
 
     def _validate_config(self) -> None:
         """Validate the configuration ensuring required fields are present and consistent."""
         assert self.model.name, "Model name must be specified"
         assert self.model.tokenizer_path, "Tokenizer path must be specified"
+        
+        # Debug log inside validation
+        logger.info(f"Checking model config in validation: hasattr(args)={hasattr(self.model, 'args')}")
+        if hasattr(self.model, 'args'):
+            logger.info(f"Model args content: {self.model.args}")
         
         # Check for either flavor or args
         has_flavor = hasattr(self.model, 'flavor') and self.model.flavor is not None
