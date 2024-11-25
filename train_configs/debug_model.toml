@@ -20,21 +20,20 @@ save_tb_folder = "tb"
 
 [model]
 name = "llama3"
-norm_type = "rmsnorm"  # layernorm / np_layernorm / rmsnorm / fused_rmsnorm
-# test tokenizer.model, for debug purpose only
+norm_type = "rmsnorm"
 tokenizer_path = "./test/assets/test_tiktoken.model"
-
-[model.args]
-dim = 512
-n_layers = 12
-n_heads = 6
-n_kv_heads = 6
-multiple_of = 128
-ffn_dim_multiplier = 1.0
-norm_eps = 1e-5
-rope_theta = 500000.0
-max_seq_len = 1024
-ffn_scaling_fn = "s_curve_constrained"
+args = { 
+    dim = 512,
+    n_layers = 12,
+    n_heads = 6,
+    n_kv_heads = 6,
+    multiple_of = 128,
+    ffn_dim_multiplier = 1.0,
+    norm_eps = 1e-5,
+    rope_theta = 500000.0,
+    max_seq_len = 1024,
+    ffn_scaling_fn = "s_curve_constrained"
+}
 
 [optimizer]
 name = "AdamW"
