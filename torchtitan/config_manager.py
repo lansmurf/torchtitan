@@ -162,6 +162,12 @@ class JobConfig:
             help="Which model config to train",
         )
         self.parser.add_argument(
+                    "--model.args",
+                    type=dict,
+                    default=None,
+                    help="Direct model arguments (optional if model.flavor is provided)",
+                )
+        self.parser.add_argument(
             "--model.norm_type",
             type=str,
             default="rmsnorm",
@@ -566,8 +572,13 @@ class JobConfig:
         if config_file is not None:
             try:
                 with open(config_file, "rb") as f:
-                    for k, v in tomllib.load(f).items():
-                        # to prevent overwrite of non-specified keys
+                    toml_config = tomllib.load(f)
+                    for k, v in toml_config.items():
+                        if k == "model" and "args" in v:
+                            # Ensure model.args is properly handled from TOML
+                            args_dict[k]["args"] = v["args"]
+                            if "flavor" in v:
+                                del v["flavor"]  # Remove flavor if args are provided
                         args_dict[k] |= v
             except (FileNotFoundError, tomllib.TOMLDecodeError) as e:
                 logger.exception(
@@ -600,17 +611,27 @@ class JobConfig:
             setattr(self, k, class_type())
         self._validate_config()
 
+    def _validate_config(self) -> None:
+        """Validate the configuration ensuring required fields are present and consistent."""
+        assert self.model.name, "Model name must be specified"
+        assert self.model.tokenizer_path, "Tokenizer path must be specified"
+        
+        # Check for either flavor or args, but not both
+        has_flavor = hasattr(self.model, 'flavor') and self.model.flavor is not None
+        has_args = hasattr(self.model, 'args') and self.model.args is not None
+        
+        if not (has_flavor or has_args):
+            raise ValueError("Either model.flavor or model.args must be specified")
+        if has_flavor and has_args:
+            logger.warning("Both model.flavor and model.args are specified. model.args will take precedence.")
+
+
     def _args_to_two_level_dict(self, args: argparse.Namespace) -> defaultdict:
         args_dict = defaultdict(defaultdict)
         for k, v in vars(args).items():
             first_level_key, second_level_key = k.split(".", 1)
             args_dict[first_level_key][second_level_key] = v
         return args_dict
-
-    def _validate_config(self) -> None:
-        assert self.model.name
-        assert self.model.tokenizer_path
-        assert hasattr(self.model, 'flavor') or hasattr(self.model, 'args'), "Must specify either model.flavor or model.args"
 
     def parse_args_from_command_line(
         self, args_list
