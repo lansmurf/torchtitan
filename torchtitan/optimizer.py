@@ -544,7 +544,7 @@ def precond_schedule(step, precond_scheduler, rng):
 # OPTIMIZER DEFINITIONS (credits to heavyball)
 #-----------------
 
-class PrecondScheduleSFPaLMSOAP(Optimizer):
+class PrecondScheduleSFPaLMSOAP(ScheduleFree):
     """
     Implements PrecondScheduleSFPaLMSOAP algorithm.
     

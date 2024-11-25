@@ -608,10 +608,9 @@ class JobConfig:
         return args_dict
 
     def _validate_config(self) -> None:
-        # TODO: Add more mandatory validations
         assert self.model.name
-        assert self.model.flavor
         assert self.model.tokenizer_path
+        assert hasattr(self.model, 'flavor') or hasattr(self.model, 'args'), "Must specify either model.flavor or model.args"
 
     def parse_args_from_command_line(
         self, args_list

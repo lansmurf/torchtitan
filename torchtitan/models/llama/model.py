@@ -11,6 +11,7 @@
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
+import numpy as np
 import math
 import torch
 import torch.nn.functional as F
@@ -35,11 +36,65 @@ class ModelArgs:
     # `False`, each uses the total number of transformer blocks
     depth_init: bool = True
     norm_type: str = "rmsnorm"
+
+    # Add new param for FFN scaling
+    ffn_scaling_fn: Optional[str] = None  # e.g. "s_curve", "linear", etc
     
     # Mixture of Depths parameters
     use_mixture_of_depths: bool = False  # Toggle for MoD
     capacity_ratio: float = 1.0  # Default capacity ratio (process all tokens)
     route_every_n_layers: int = 1  # Route every n layers (1 means route every layer)
+
+
+Y
+Ok but use the multiple of arg in the s_curve constrained so we round to whatever nearest multiple of
+
+
+python
+
+Copy
+def get_ffn_scaling_fn(name: Optional[str]):
+   if name is None:
+       return lambda layer_id, n_layers, base_dim, model_dim, multiple_of: base_dim
+
+   def s_curve_multiple_constrained(layer_id, n_layers, base_dim, model_dim, multiple_of):
+       # First calculate dims for all layers to get scaling factor
+       dims = []
+       for l in range(n_layers):
+           x = (l - n_layers*0.7) / (n_layers/5)
+           scale = 0.5 * (1 + np.tanh(x))
+           if l < n_layers//3:
+               dim = base_dim * (0.7 + scale * 1.3)
+           else:
+               dim = base_dim * (1 + scale * 1.5)
+           dims.append(dim)
+       
+       # Calculate target params (standard FFN params)
+       target_params = n_layers * (model_dim * base_dim * 2)
+       
+       # Get scaling factor
+       current_params = sum((model_dim * dim + dim * model_dim) for dim in dims)
+       scale_factor = target_params / current_params
+       
+       # Scale and round all dims to multiple_of
+       scaled_dims = [multiple_of * round(dim * scale_factor / multiple_of) for dim in dims]
+       
+       # Return only the dim for current layer
+       return scaled_dims[layer_id]
+
+   scaling_fns = {
+       "s_curve": lambda layer_id, n_layers, base_dim, model_dim, multiple_of: int(
+           base_dim * (1 + 0.5 * (1 + np.tanh((layer_id - n_layers*0.7) / (n_layers/5))) * 
+           (1.5 if layer_id >= n_layers//3 else 1.3))
+       ),
+       "linear": lambda layer_id, n_layers, base_dim, model_dim, multiple_of: int(
+           base_dim * (0.7 + 1.3 * layer_id / n_layers)
+       ),
+       "s_curve_constrained": s_curve_multiple_constrained,
+   }
+   
+   assert name in scaling_fns, f"Unknown scaling function: {name}. Available: {list(scaling_fns.keys())}"
+   return scaling_fns[name]
 
 def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0) -> torch.Tensor:
     #print(f"\nprecompute_freqs_cis input dims: dim={dim}, end={end}")
@@ -352,34 +407,31 @@ class Attention(nn.Module):
         return self.wo(output)
 
 class FeedForward(nn.Module):
-    """
-    FeedForward module
-
-    Args:
-        dim (int): Input dimension.
-        hidden_dim (int): Hidden dimension of the feedforward layer.
-        multiple_of (int): Value to ensure hidden dimension is a multiple of this value.
-        ffn_dim_multiplier (Optional[float]): Custom multiplier for hidden dimension. Defaults to None.
-
-    Attributes:
-        w1 (Linear): Linear transformation for the first layer.
-        w2 (Linear): Linear transformation for the second layer.
-        w3 (Linear): Linear transformation for the third layer.
-
-    """
-
     def __init__(
         self,
         dim: int,
         hidden_dim: int,
         multiple_of: int,
         ffn_dim_multiplier: Optional[float],
+        layer_id: Optional[int] = None,
+        n_layers: Optional[int] = None,
+        scaling_fn: Optional[str] = None,
     ):
         super().__init__()
+        
+        # Get the scaling function
+        scale_fn = get_ffn_scaling_fn(scaling_fn)
+        
+        # Apply base hidden dim calculation
         hidden_dim = int(2 * hidden_dim / 3)
-        # custom dim factor multiplier
         if ffn_dim_multiplier is not None:
             hidden_dim = int(ffn_dim_multiplier * hidden_dim)
+            
+        # Apply scaling function if layer info provided
+        if layer_id is not None and n_layers is not None:
+            hidden_dim = scale_fn(layer_id, n_layers, hidden_dim)
+            
+        # Round to multiple
         hidden_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
 
         self.w1 = nn.Linear(dim, hidden_dim, bias=False)
@@ -396,25 +448,6 @@ class FeedForward(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    """
-    TransformerBlock Module
-
-    Args:
-        layer_id (int): Identifier for the layer.
-        model_args (ModelArgs): Model configuration arguments.
-
-    Attributes:
-        n_heads (int): Number of attention heads.
-        dim (int): Dimension size of the model.
-        head_dim (int): Dimension size of each attention head.
-        attention (Attention): Attention module.
-        feed_forward (FeedForward): FeedForward module.
-        layer_id (int): Identifier for the layer.
-        attention_norm (RMSNorm): Layer normalization for attention output.
-        ffn_norm (RMSNorm): Layer normalization for feedforward output.
-
-    """
-
     def __init__(self, layer_id: int, model_args: ModelArgs):
         super().__init__()
         self.n_heads = model_args.n_heads
@@ -425,7 +458,11 @@ class TransformerBlock(nn.Module):
             hidden_dim=4 * model_args.dim,
             multiple_of=model_args.multiple_of,
             ffn_dim_multiplier=model_args.ffn_dim_multiplier,
+            layer_id=layer_id,
+            n_layers=model_args.n_layers,
+            scaling_fn=model_args.ffn_scaling_fn,
         )
+
         self.layer_id = layer_id
         self.num_layers = model_args.n_layers
 
