@@ -47,47 +47,49 @@ class ModelArgs:
 
 
 def get_ffn_scaling_fn(name: Optional[str]):
-   if name is None:
-       return lambda layer_id, n_layers, base_dim, model_dim, multiple_of: base_dim
+    if name is None:
+        # Default function needs all args to match signature
+        return lambda layer_id, n_layers, base_dim, model_dim, multiple_of: base_dim
 
-   def s_curve_multiple_constrained(layer_id, n_layers, base_dim, model_dim, multiple_of):
-       # First calculate dims for all layers to get scaling factor
-       dims = []
-       for l in range(n_layers):
-           x = (l - n_layers*0.7) / (n_layers/5)
-           scale = 0.5 * (1 + np.tanh(x))
-           if l < n_layers//3:
-               dim = base_dim * (0.7 + scale * 1.3)
-           else:
-               dim = base_dim * (1 + scale * 1.5)
-           dims.append(dim)
-       
-       # Calculate target params (standard FFN params)
-       target_params = n_layers * (model_dim * base_dim * 2)
-       
-       # Get scaling factor
-       current_params = sum((model_dim * dim + dim * model_dim) for dim in dims)
-       scale_factor = target_params / current_params
-       
-       # Scale and round all dims to multiple_of
-       scaled_dims = [multiple_of * round(dim * scale_factor / multiple_of) for dim in dims]
-       
-       # Return only the dim for current layer
-       return scaled_dims[layer_id]
+    def s_curve_multiple_constrained(layer_id, n_layers, base_dim, model_dim, multiple_of):
+        # Function from before, unchanged
+        dims = []
+        for l in range(n_layers):
+            x = (l - n_layers*0.7) / (n_layers/5)
+            scale = 0.5 * (1 + np.tanh(x))
+            if l < n_layers//3:
+                dim = base_dim * (0.7 + scale * 1.3)
+            else:
+                dim = base_dim * (1 + scale * 1.5)
+            dims.append(dim)
+        
+        target_params = n_layers * (model_dim * base_dim * 2)
+        current_params = sum((model_dim * dim + dim * model_dim) for dim in dims)
+        scale_factor = target_params / current_params
+        
+        scaled_dims = [multiple_of * round(dim * scale_factor / multiple_of) for dim in dims]
+        return scaled_dims[layer_id]
 
-   scaling_fns = {
-       "s_curve": lambda layer_id, n_layers, base_dim, model_dim, multiple_of: int(
-           base_dim * (1 + 0.5 * (1 + np.tanh((layer_id - n_layers*0.7) / (n_layers/5))) * 
-           (1.5 if layer_id >= n_layers//3 else 1.3))
-       ),
-       "linear": lambda layer_id, n_layers, base_dim, model_dim, multiple_of: int(
-           base_dim * (0.7 + 1.3 * layer_id / n_layers)
-       ),
-       "s_curve_constrained": s_curve_multiple_constrained,
-   }
-   
-   assert name in scaling_fns, f"Unknown scaling function: {name}. Available: {list(scaling_fns.keys())}"
-   return scaling_fns[name]
+    def s_curve_simple(layer_id, n_layers, base_dim, model_dim, multiple_of):
+        # Simple version needs all args to match signature even if unused
+        x = (layer_id - n_layers*0.7) / (n_layers/5)
+        scale = 0.5 * (1 + np.tanh(x))
+        dim = base_dim * (1 + scale * (1.5 if layer_id >= n_layers//3 else 1.3))
+        return multiple_of * round(dim / multiple_of)
+
+    def linear_scale(layer_id, n_layers, base_dim, model_dim, multiple_of):
+        # Linear version needs all args to match signature even if unused
+        dim = base_dim * (0.7 + 1.3 * layer_id / n_layers)
+        return multiple_of * round(dim / multiple_of)
+
+    scaling_fns = {
+        "s_curve": s_curve_simple,
+        "linear": linear_scale,
+        "s_curve_constrained": s_curve_multiple_constrained,
+    }
+    
+    assert name in scaling_fns, f"Unknown scaling function: {name}. Available: {list(scaling_fns.keys())}"
+    return scaling_fns[name]
 
 def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0) -> torch.Tensor:
     #print(f"\nprecompute_freqs_cis input dims: dim={dim}, end={end}")
@@ -401,19 +403,16 @@ class Attention(nn.Module):
 
 class FeedForward(nn.Module):
     def __init__(
-        self,
+        self, 
         dim: int,
         hidden_dim: int,
         multiple_of: int,
         ffn_dim_multiplier: Optional[float],
         layer_id: Optional[int] = None,
-        n_layers: Optional[int] = None,
+        n_layers: Optional[int] = None, 
         scaling_fn: Optional[str] = None,
     ):
         super().__init__()
-        
-        # Get the scaling function
-        scale_fn = get_ffn_scaling_fn(scaling_fn)
         
         # Apply base hidden dim calculation
         hidden_dim = int(2 * hidden_dim / 3)
@@ -421,12 +420,10 @@ class FeedForward(nn.Module):
             hidden_dim = int(ffn_dim_multiplier * hidden_dim)
             
         # Apply scaling function if layer info provided
-        if layer_id is not None and n_layers is not None:
-            hidden_dim = scale_fn(layer_id, n_layers, hidden_dim)
+        if layer_id is not None and n_layers is not None and scaling_fn is not None:
+            scale_fn = get_ffn_scaling_fn(scaling_fn)
+            hidden_dim = scale_fn(layer_id, n_layers, hidden_dim, dim, multiple_of)
             
-        # Round to multiple
-        hidden_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
-
         self.w1 = nn.Linear(dim, hidden_dim, bias=False)
         self.w2 = nn.Linear(hidden_dim, dim, bias=False)
         self.w3 = nn.Linear(dim, hidden_dim, bias=False)
