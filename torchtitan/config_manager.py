@@ -574,12 +574,15 @@ class JobConfig:
                 with open(config_file, "rb") as f:
                     toml_config = tomllib.load(f)
                     for k, v in toml_config.items():
-                        if k == "model" and "args" in v:
-                            # Ensure model.args is properly handled from TOML
-                            args_dict[k]["args"] = v["args"]
-                            if "flavor" in v:
-                                del v["flavor"]  # Remove flavor if args are provided
-                        args_dict[k] |= v
+                        if k in args_dict:
+                            args_dict[k] |= v
+                        else:
+                            args_dict[k] = v
+                            
+                    # Remove flavor if args exists in model section
+                    if "model" in args_dict and "args" in args_dict["model"]:
+                        args_dict["model"].pop("flavor", None)
+                        
             except (FileNotFoundError, tomllib.TOMLDecodeError) as e:
                 logger.exception(
                     f"Error while loading the configuration file: {config_file}"
@@ -616,14 +619,12 @@ class JobConfig:
         assert self.model.name, "Model name must be specified"
         assert self.model.tokenizer_path, "Tokenizer path must be specified"
         
-        # Check for either flavor or args, but not both
+        # Check for either flavor or args
         has_flavor = hasattr(self.model, 'flavor') and self.model.flavor is not None
         has_args = hasattr(self.model, 'args') and self.model.args is not None
         
         if not (has_flavor or has_args):
             raise ValueError("Either model.flavor or model.args must be specified")
-        if has_flavor and has_args:
-            logger.warning("Both model.flavor and model.args are specified. model.args will take precedence.")
 
 
     def _args_to_two_level_dict(self, args: argparse.Namespace) -> defaultdict:
