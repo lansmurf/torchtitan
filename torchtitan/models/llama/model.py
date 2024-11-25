@@ -82,10 +82,34 @@ def get_ffn_scaling_fn(name: Optional[str]):
         dim = base_dim * (0.7 + 1.3 * layer_id / n_layers)
         return multiple_of * round(dim / multiple_of)
 
+    def stepped_scale(layer_id, n_layers, base_dim, model_dim, multiple_of):
+        # Define the tiers - threshold: scale factor
+        tiers = {
+            0: 0.7,    # First third - reduced size
+            n_layers // 3: 1.0,  # Second third - baseline size
+            2 * n_layers // 3: 1.4,  # Final third - enlarged
+            int(0.85 * n_layers): 1.8  # Last few layers - much larger
+        }
+        
+        # Find appropriate tier
+        scale = tiers[0]  # Default to first tier
+        for threshold, tier_scale in tiers.items():
+            if layer_id >= threshold:
+                scale = tier_scale
+                
+        dim = base_dim * scale
+        
+        # Adjust for param count to match standard FFN
+        total_params = n_layers * (model_dim * base_dim * 2)  # target params
+        correction = 1.0  # Could add correction factor if needed
+        
+        return multiple_of * round(dim * correction / multiple_of)
+
     scaling_fns = {
         "s_curve": s_curve_simple,
         "linear": linear_scale,
         "s_curve_constrained": s_curve_multiple_constrained,
+        "stepped": stepped_scale,
     }
     
     assert name in scaling_fns, f"Unknown scaling function: {name}. Available: {list(scaling_fns.keys())}"
