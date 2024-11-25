@@ -312,6 +312,10 @@ class DifferentialAttention(nn.Module):
             nn.init.trunc_normal_(linear.weight, mean=0.0, std=0.02)
         nn.init.trunc_normal_(self.wo.weight, mean=0.0, std=init_std)
 
+
+# revise: https://x.com/_xjdr/status/1860754674506465754
+# softmax check on fp32
+
 class FlexAttention(nn.Module):
     def __init__(self, model_args: ModelArgs):
         super().__init__()
