@@ -24,7 +24,7 @@ norm_type = "rmsnorm"
 tokenizer_path = "./test/assets/test_tiktoken.model"
 
 [model.args]
-dim = 512
+dim = 768
 n_layers = 12
 n_heads = 6
 n_kv_heads = 6
