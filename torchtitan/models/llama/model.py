@@ -45,6 +45,9 @@ class ModelArgs:
     capacity_ratio: float = 1.0  # Default capacity ratio (process all tokens)
     route_every_n_layers: int = 1  # Route every n layers (1 means route every layer)
 
+    # Fuse head
+    use_fused_head: bool = True  # New parameter to control head fusion
+
 
 def get_ffn_scaling_fn(name: Optional[str]):
     if name is None:
@@ -471,18 +474,36 @@ class TransformerBlock(nn.Module):
         self.n_heads = model_args.n_heads
         self.dim = model_args.dim
         self.attention = Attention(model_args)
-        self.feed_forward = FeedForward(
-            dim=model_args.dim,
-            hidden_dim=4 * model_args.dim,
-            multiple_of=model_args.multiple_of,
-            ffn_dim_multiplier=model_args.ffn_dim_multiplier,
-            layer_id=layer_id,
-            n_layers=model_args.n_layers,
-            scaling_fn=model_args.ffn_scaling_fn,
-        )
+        
+        # Only use fused FFN for last layer when fused head is enabled
+        is_last_layer = layer_id == model_args.n_layers - 1
+        if is_last_layer and model_args.use_fused_head:
+            self.feed_forward = FusedFeedForward(
+                dim=model_args.dim,
+                hidden_dim=4 * model_args.dim,
+                multiple_of=model_args.multiple_of,
+                ffn_dim_multiplier=model_args.ffn_dim_multiplier,
+            )
+            self.hidden_norm = build_norm(
+                model_args.norm_type, 
+                dim=self.feed_forward.hidden_dim, 
+                eps=model_args.norm_eps
+            )
+        else:
+            self.feed_forward = FeedForward(
+                dim=model_args.dim,
+                hidden_dim=4 * model_args.dim,
+                multiple_of=model_args.multiple_of,
+                ffn_dim_multiplier=model_args.ffn_dim_multiplier,
+                layer_id=layer_id,
+                n_layers=model_args.n_layers,
+            )
+            self.hidden_norm = None
 
         self.layer_id = layer_id
         self.num_layers = model_args.n_layers
+        self.is_last_layer = is_last_layer
+        self.use_fused_head = model_args.use_fused_head
 
         self.attention_norm = build_norm(
             model_args.norm_type, dim=model_args.dim, eps=model_args.norm_eps
@@ -498,81 +519,90 @@ class TransformerBlock(nn.Module):
 
     def forward(self, x: torch.Tensor, mask: Optional[BlockMask], freqs_cis: torch.Tensor):
         h = x + self.attention(self.attention_norm(x), mask, freqs_cis)
-        out = h + self.feed_forward(self.ffn_norm(h))
-        return out 
+        
+        # Only use fused path for last layer when fused head is enabled
+        if self.is_last_layer and self.use_fused_head:
+            h_ffn = self.feed_forward(self.ffn_norm(h))
+            h_norm = self.hidden_norm(h_ffn)
+            return h_norm  # Return normalized hidden state directly
+        else:
+            # Regular path for all other layers
+            return h + self.feed_forward(self.ffn_norm(h))
 
-    def init_weights(self):
-        for norm in (self.attention_norm, self.ffn_norm):
-            norm.reset_parameters()
-        self.attention.init_weights(self.weight_init_std)
-        self.feed_forward.init_weights(self.weight_init_std)
+class FusedFeedForward(nn.Module):
+    def __init__(
+        self, 
+        dim: int,
+        hidden_dim: int,
+        multiple_of: int,
+        ffn_dim_multiplier: Optional[float],
+    ):
+        super().__init__()
+        hidden_dim = int(2 * hidden_dim / 3)
+        if ffn_dim_multiplier is not None:
+            hidden_dim = int(ffn_dim_multiplier * hidden_dim)
+        hidden_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
+        
+        self.hidden_dim = hidden_dim  # Store for access by Transformer
+        self.w1 = nn.Linear(dim, hidden_dim, bias=False)  # Up projection
+        self.w3 = nn.Linear(dim, hidden_dim, bias=False)  # Gate projection
+        # No down projection needed as it's fused with head
+
+    def forward(self, x):
+        # Only up project and activate
+        return F.relu(self.w1(x)).square() * self.w3(x)
+        
+    def init_weights(self, init_std: float):
+        for linear in (self.w1, self.w3):
+            nn.init.trunc_normal_(linear.weight, mean=0.0, std=init_std)
 
 
 class Transformer(nn.Module):
-    """
-    Transformer Module
-
-    Args:
-        model_args (ModelArgs): Model configuration arguments.
-
-    Attributes:
-        model_args (ModelArgs): Model configuration arguments.
-        vocab_size (int): Vocabulary size.
-        n_layers (int): Number of layers in the model.
-        tok_embeddings (ParallelEmbedding): Token embeddings.
-        layers (torch.nn.ModuleList): List of Transformer blocks.
-        norm (RMSNorm): Layer normalization for the model output.
-        output (ColumnParallelLinear): Linear layer for final output.
-        freqs_cis (torch.Tensor): Precomputed cosine and sine frequencies.
-
-    """
-
     def __init__(self, model_args: ModelArgs):
         super().__init__()
         self.model_args = model_args
         self.vocab_size = model_args.vocab_size
         self.n_layers = model_args.n_layers
+        self.use_fused_head = model_args.use_fused_head
 
         self.tok_embeddings = nn.Embedding(model_args.vocab_size, model_args.dim)
-
-        # TODO persistent should be set to false, since this buffer can be recomputed.
-        # however, we set it to true for 2 reasons.  (1) due to pytorch/pytorch#123411,
-        # compile or pipeline-tracer will not correctly handle non-persistent buffers,
-        # so we need to fix that.  (2) if we initialize pipeline-parallel models from
-        # a seed checkpoint rather than calling init_weights, we need freqs_cis to be
-        # initialized by the checkpoint, or we need to add a separate initializer for
-        # just the non-persistent buffers that is called after loading checkpoints.
         self.register_buffer("freqs_cis", self._precompute_freqs_cis(), persistent=True)
 
         self.layers = torch.nn.ModuleDict()
         for layer_id in range(model_args.n_layers):
             self.layers[str(layer_id)] = TransformerBlock(layer_id, model_args)
 
-        self.norm = build_norm(
-            model_args.norm_type, dim=model_args.dim, eps=model_args.norm_eps
-        )
+        # Output head configuration
+        if self.use_fused_head:
+            # Project from hidden_dim of last layer's FFN
+            last_layer = self.layers[str(self.n_layers - 1)]
+            assert isinstance(last_layer.feed_forward, FusedFeedForward)
+            hidden_dim = last_layer.feed_forward.hidden_dim
+            self.output = nn.Linear(hidden_dim, model_args.vocab_size, bias=False)
+            self.norm = None  # No final norm needed for fused head
+        else:
+            # Regular output head
+            self.norm = build_norm(
+                model_args.norm_type, dim=model_args.dim, eps=model_args.norm_eps
+            )
+            self.output = nn.Linear(model_args.dim, model_args.vocab_size, bias=False)
 
-        self.output = nn.Linear(model_args.dim, model_args.vocab_size, bias=False)
-        self.init_weights()
+    def forward(self, tokens: torch.Tensor, mask: Optional[BlockMask]):
+        h = self.tok_embeddings(tokens)
+        
+        for layer in self.layers.values():
+            h = layer(h, mask, self.freqs_cis)
+        
+        if not self.use_fused_head:
+            h = self.norm(h)
+            
+        return self.output(h)
 
-    def init_weights(
-        self,
-        buffer_device: Optional[torch.device] = None,
-    ):
-        """
-        [Note: On ``init_weights`` vs. ``reset_parameters``]
-        Modules may define ``reset_parameters`` to initialize parameter values.
-        ``reset_parameters`` is meant to only initialize directly owned
-        parameters/buffers, not those of their child modules, and it can be
-        used to give the initial values for these tensors.
-        Separately, users may want custom initialization for their modules,
-        different from that in ``reset_parameters``. For this, we define
-        ``init_weights``. We only call it in the constructor of this
-        ``Transformer`` root module to avoid reinitializing tensors.
-        """
-        buffer_device = buffer_device or self.freqs_cis.device
+    def init_weights(self, buffer_device: Optional[torch.device] = None):
+        buffer_device = buffer_device or next(self.parameters()).device
         with torch.device(buffer_device):
             self.freqs_cis = self._precompute_freqs_cis()
+            
         if self.tok_embeddings is not None:
             nn.init.normal_(self.tok_embeddings.weight)
         for layer in self.layers.values():
