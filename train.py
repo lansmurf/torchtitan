@@ -9,7 +9,7 @@ import time
 from datetime import timedelta
 
 import torch
-
+import torch.nn as nn
 from torch.distributed.elastic.multiprocessing.errors import record
 
 from torchtitan import utils
@@ -169,7 +169,6 @@ def main(job_config: JobConfig):
     )
 
     def log_model_structure(model, model_config, color):
-        # Build the log message as a list of lines
         lines = [
             f"\n{color.blue}{'=' * 80}{color.reset}",
             f"{color.blue}Model Structure{color.reset}",
@@ -180,22 +179,27 @@ def main(job_config: JobConfig):
         ]
         
         total_ffn_params = 0
-        # Log each transformer block's dimensions
         for layer_id, layer in model.layers.items():
-            ffn_hidden_dim = layer.feed_forward.w1.weight.shape[0]
-            layer_ffn_params = (
-                layer.feed_forward.w1.weight.numel() + 
-                layer.feed_forward.w2.weight.numel() + 
-                layer.feed_forward.w3.weight.numel()
-            )
-            total_ffn_params += layer_ffn_params
+            # Dynamically discover FFN structure and params
+            ffn_params = 0
+            ffn_dims = [model_config.dim]  # Start with input dim
+            
+            # Inspect all linear layers in feed_forward
+            for name, module in layer.feed_forward.named_modules():
+                if isinstance(module, nn.Linear):
+                    ffn_params += module.weight.numel()
+                    if module.weight.shape[0] not in ffn_dims:
+                        ffn_dims.append(module.weight.shape[0])
+            
+            total_ffn_params += ffn_params
+            ffn_structure = " → ".join(map(str, ffn_dims))
             
             lines.extend([
                 f"{color.cyan}Layer {layer_id}:{color.reset}",
                 f"  {color.yellow}Attention:{color.reset} {layer.attention.n_heads} heads "
                 f"({layer.attention.n_kv_heads} KV heads) × {layer.attention.head_dim} dim",
-                f"  {color.green}FFN:{color.reset} {model_config.dim} → {ffn_hidden_dim} → {model_config.dim} "
-                f"(params: {layer_ffn_params:,})",
+                f"  {color.green}FFN:{color.reset} {ffn_structure} "
+                f"(params: {ffn_params:,})",
                 f"{color.blue}{'-' * 80}{color.reset}"
             ])
         
@@ -206,7 +210,6 @@ def main(job_config: JobConfig):
             f"{color.blue}{'=' * 80}{color.reset}\n"
         ])
 
-        # Print everything as a single log message
         logger.info('\n'.join(lines))
 
     # Call it with model_config
