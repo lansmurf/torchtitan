@@ -151,37 +151,39 @@ def main(job_config: JobConfig):
         f"{color.red}size: {model_param_count:,} total parameters{color.reset}"
     )
 
-    # After model param count logging
-    model_param_count = utils.get_num_params(model)
-    num_flop_per_token = utils.get_num_flop_per_token(
-        utils.get_num_params(model, exclude_embedding=True),
-        model_config,
-        job_config.training.seq_len,
-    )
-
-    # Add detailed model structure logging
-    def log_model_structure(model, color):
+    def log_model_structure(model, model_config, color):
         logger.info(f"\n{color.blue}Model Structure:{color.reset}")
-        logger.info(f"Embedding dim: {model.dim}")
+        logger.info(f"Embedding dim: {model_config.dim}")
+        logger.info(f"Num layers: {model_config.n_layers}")
         
+        total_ffn_params = 0
         # Log each transformer block's dimensions
         for layer_id, layer in model.layers.items():
             # Get FFN dimensions by inspecting the linear layers
-            ffn_hidden_dim = layer.feed_forward.w1.out_features
+            ffn_hidden_dim = layer.feed_forward.w1.weight.shape[0]  # out_features
+            layer_ffn_params = (
+                layer.feed_forward.w1.weight.numel() + 
+                layer.feed_forward.w2.weight.numel() + 
+                layer.feed_forward.w3.weight.numel()
+            )
+            total_ffn_params += layer_ffn_params
             
             logger.info(
-                f"Layer {layer_id}:\n"
+                f"{color.cyan}Layer {layer_id}:{color.reset}\n"
                 f"  {color.yellow}Attention:{color.reset} {layer.attention.n_heads} heads "
                 f"({layer.attention.n_kv_heads} KV heads) × {layer.attention.head_dim} dim\n"
-                f"  {color.green}FFN:{color.reset} {model.dim} → {ffn_hidden_dim} → {model.dim}"
+                f"  {color.green}FFN:{color.reset} {model_config.dim} → {ffn_hidden_dim} → {model_config.dim} "
+                f"(params: {layer_ffn_params:,})"
             )
         
         logger.info(
-            f"\n{color.blue}Model {model_name} {job_config.model.flavor} "
-            f"{color.red}size: {model_param_count:,} total parameters{color.reset}"
+            f"\n{color.blue}Summary:{color.reset}\n"
+            f"Total FFN params: {total_ffn_params:,} ({total_ffn_params/model_param_count*100:.1f}% of model)\n"
+            f"Total params: {model_param_count:,}"
         )
 
-    log_model_structure(model, color)
+    # Call it with model_config
+    log_model_structure(model, model_config, color)
 
     def train_step(model, input_ids, causal_mask, labels, loss_fn):
         pred = model(input_ids, causal_mask)
