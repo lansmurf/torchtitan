@@ -151,6 +151,38 @@ def main(job_config: JobConfig):
         f"{color.red}size: {model_param_count:,} total parameters{color.reset}"
     )
 
+    # After model param count logging
+    model_param_count = utils.get_num_params(model)
+    num_flop_per_token = utils.get_num_flop_per_token(
+        utils.get_num_params(model, exclude_embedding=True),
+        model_config,
+        job_config.training.seq_len,
+    )
+
+    # Add detailed model structure logging
+    def log_model_structure(model, color):
+        logger.info(f"\n{color.blue}Model Structure:{color.reset}")
+        logger.info(f"Embedding dim: {model.dim}")
+        
+        # Log each transformer block's dimensions
+        for layer_id, layer in model.layers.items():
+            # Get FFN dimensions by inspecting the linear layers
+            ffn_hidden_dim = layer.feed_forward.w1.out_features
+            
+            logger.info(
+                f"Layer {layer_id}:\n"
+                f"  {color.yellow}Attention:{color.reset} {layer.attention.n_heads} heads "
+                f"({layer.attention.n_kv_heads} KV heads) × {layer.attention.head_dim} dim\n"
+                f"  {color.green}FFN:{color.reset} {model.dim} → {ffn_hidden_dim} → {model.dim}"
+            )
+        
+        logger.info(
+            f"\n{color.blue}Model {model_name} {job_config.model.flavor} "
+            f"{color.red}size: {model_param_count:,} total parameters{color.reset}"
+        )
+
+    log_model_structure(model, color)
+
     def train_step(model, input_ids, causal_mask, labels, loss_fn):
         pred = model(input_ids, causal_mask)
         loss = loss_fn(pred, labels)
