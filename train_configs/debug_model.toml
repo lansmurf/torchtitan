@@ -40,18 +40,18 @@ name = "AdamW"
 lr = 8e-4
 
 [training]
-batch_size = 8
+batch_size = 32
 seq_len = 512
-warmup_fraction = 0.0
+warmup_fraction = 0.2
 stable_fraction = 0.6
 max_norm = 1.0  # grad norm clipping
-steps = 10
-data_parallel_replicate_degree = 1
+steps = 50
+data_parallel_replicate_degree = 2
 data_parallel_shard_degree = -1
 tensor_parallel_degree = 1
 compile = true
 dataset = "c4_test"  # supported datasets: c4_test (2K), c4 (177M)
-gradient_accumulation_steps = 4
+gradient_accumulation_steps = 8
 
 [experimental]
 context_parallel_degree = 1
