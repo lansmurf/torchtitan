@@ -152,15 +152,20 @@ def main(job_config: JobConfig):
     )
 
     def log_model_structure(model, model_config, color):
-        logger.info(f"\n{color.blue}Model Structure:{color.reset}")
-        logger.info(f"Embedding dim: {model_config.dim}")
-        logger.info(f"Num layers: {model_config.n_layers}")
+        # Build the log message as a list of lines
+        lines = [
+            f"\n{color.blue}{'=' * 80}{color.reset}",
+            f"{color.blue}Model Structure{color.reset}",
+            f"{color.blue}{'=' * 80}{color.reset}\n",
+            f"Embedding dim: {model_config.dim}",
+            f"Num layers: {model_config.n_layers}\n",
+            f"{color.blue}{'-' * 80}{color.reset}"
+        ]
         
         total_ffn_params = 0
         # Log each transformer block's dimensions
         for layer_id, layer in model.layers.items():
-            # Get FFN dimensions by inspecting the linear layers
-            ffn_hidden_dim = layer.feed_forward.w1.weight.shape[0]  # out_features
+            ffn_hidden_dim = layer.feed_forward.w1.weight.shape[0]
             layer_ffn_params = (
                 layer.feed_forward.w1.weight.numel() + 
                 layer.feed_forward.w2.weight.numel() + 
@@ -168,19 +173,24 @@ def main(job_config: JobConfig):
             )
             total_ffn_params += layer_ffn_params
             
-            logger.info(
-                f"{color.cyan}Layer {layer_id}:{color.reset}\n"
+            lines.extend([
+                f"{color.cyan}Layer {layer_id}:{color.reset}",
                 f"  {color.yellow}Attention:{color.reset} {layer.attention.n_heads} heads "
-                f"({layer.attention.n_kv_heads} KV heads) × {layer.attention.head_dim} dim\n"
+                f"({layer.attention.n_kv_heads} KV heads) × {layer.attention.head_dim} dim",
                 f"  {color.green}FFN:{color.reset} {model_config.dim} → {ffn_hidden_dim} → {model_config.dim} "
-                f"(params: {layer_ffn_params:,})"
-            )
+                f"(params: {layer_ffn_params:,})",
+                f"{color.blue}{'-' * 80}{color.reset}"
+            ])
         
-        logger.info(
-            f"\n{color.blue}Summary:{color.reset}\n"
-            f"Total FFN params: {total_ffn_params:,} ({total_ffn_params/model_param_count*100:.1f}% of model)\n"
-            f"Total params: {model_param_count:,}"
-        )
+        lines.extend([
+            f"\n{color.blue}Summary:{color.reset}",
+            f"Total FFN params: {total_ffn_params:,} ({total_ffn_params/model_param_count*100:.1f}% of model)",
+            f"Total params: {model_param_count:,}",
+            f"{color.blue}{'=' * 80}{color.reset}\n"
+        ])
+
+        # Print everything as a single log message
+        logger.info('\n'.join(lines))
 
     # Call it with model_config
     log_model_structure(model, model_config, color)
