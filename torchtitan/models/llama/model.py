@@ -528,20 +528,16 @@ class TransformerBlock(nn.Module):
                 h_normed.mean().item(), h_normed.std().item())
             
             # After FFN 
-            h_ffn = self.feed_forward(h_normed) * 100
+            h_ffn = self.feed_forward(h_normed)
             print("Post-FFN stats:", 
                 h_ffn.mean().item(), h_ffn.std().item(),
                 "\nFFN w1 norm:", self.feed_forward.w1.weight.norm().item())
             
-            # After hidden norm
-            h_norm = self.hidden_norm(h_ffn)
-            print("Post-hidden norm stats:",
-                h_norm.mean().item(), h_norm.std().item())
             
             # Sample of actual values to verify they're changing
-            print("Sample outputs:", h_norm[0,0,:5].tolist())
+            print("Sample outputs:", h_ffn[0,0,:5].tolist())
             
-            return h_norm
+            return h_ffn
         else:
             # Regular path for all other layers
             return h + self.feed_forward(self.ffn_norm(h))
