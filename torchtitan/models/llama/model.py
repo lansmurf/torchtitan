@@ -528,7 +528,7 @@ class TransformerBlock(nn.Module):
                 h_normed.mean().item(), h_normed.std().item())
             
             # After FFN 
-            h_ffn = self.feed_forward(h_normed)
+            h_ffn = self.feed_forward(h_normed) * 100
             print("Post-FFN stats:", 
                 h_ffn.mean().item(), h_ffn.std().item(),
                 "\nFFN w1 norm:", self.feed_forward.w1.weight.norm().item())
