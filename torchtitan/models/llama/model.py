@@ -484,9 +484,15 @@ class TransformerBlock(nn.Module):
                 multiple_of=model_args.multiple_of,
                 ffn_dim_multiplier=model_args.ffn_dim_multiplier,
             )
+            # Use FFN hidden_dim since that's what we're normalizing
+            hidden_dim = 4 * model_args.dim
+            if model_args.ffn_dim_multiplier is not None:
+                hidden_dim = int(model_args.ffn_dim_multiplier * hidden_dim)
+            hidden_dim = model_args.multiple_of * ((hidden_dim + model_args.multiple_of - 1) // model_args.multiple_of)
+            
             self.hidden_norm = build_norm(
                 model_args.norm_type, 
-                dim=model_args.dim, 
+                dim=hidden_dim,  # Match FFN output size
                 eps=model_args.norm_eps
             )
         else:
