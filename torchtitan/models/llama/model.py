@@ -486,7 +486,7 @@ class TransformerBlock(nn.Module):
             )
             self.hidden_norm = build_norm(
                 model_args.norm_type, 
-                dim=self.feed_forward.hidden_dim, 
+                dim=model_args.dim, 
                 eps=model_args.norm_eps
             )
         else:
