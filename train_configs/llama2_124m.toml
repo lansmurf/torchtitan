@@ -22,7 +22,7 @@ tokenizer_path = "./torchtitan/datasets/tokenizer/llama2_tokenizer/tokenizer.mod
 
 [model.args]
 dim = 768
-n_layer = 12
+n_layers = 12
 n_heads = 6
 n_kv_heads = 6
 multiple_of = 128
