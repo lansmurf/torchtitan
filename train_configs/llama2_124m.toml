@@ -39,6 +39,7 @@ compile = false
 dataset = "fineweb"
 seed = 42
 gradient_accumulation_steps = 4
+ffn_scaling_fn = "stepped"
 
 [experimental]
 context_parallel_degree = 1
