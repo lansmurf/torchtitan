@@ -46,7 +46,7 @@ class ModelArgs:
     route_every_n_layers: int = 1  # Route every n layers (1 means route every layer)
 
     # Fuse head
-    use_fused_head: bool = True  # New parameter to control head fusion
+    use_fused_head: bool = False  # New parameter to control head fusion
 
 
 def get_ffn_scaling_fn(name: Optional[str]):
