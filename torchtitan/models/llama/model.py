@@ -497,6 +497,7 @@ class TransformerBlock(nn.Module):
                 ffn_dim_multiplier=model_args.ffn_dim_multiplier,
                 layer_id=layer_id,
                 n_layers=model_args.n_layers,
+                scaling_fn=model_args.ffn_scaling_fn,
             )
             self.hidden_norm = None
 
