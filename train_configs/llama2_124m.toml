@@ -21,16 +21,16 @@ norm_type = "rmsnorm"  # layernorm / np_layernorm / rmsnorm / fused_rmsnorm
 tokenizer_path = "./torchtitan/datasets/tokenizer/llama2_tokenizer/tokenizer.model"
 
 [model.args]
-dim=768,
-n_layers=12,
-n_heads=6,
-n_kv_heads=6,
-multiple_of=128,
-ffn_dim_multiplier=1.0,
-norm_eps=1e-5,
-rope_theta=500000.0,
-max_seq_len=1024
-ffn_scaling_fn="stepped"
+dim = 768
+n_layer = 12
+n_heads = 6
+n_kv_heads = 6
+multiple_of = 128
+ffn_dim_multiplier = 1.0
+norm_eps = 1e-5
+rope_theta = 500000.0
+max_seq_len = 1024
+ffn_scaling_fn = "stepped"
 
 [optimizer]
 name = "AdamW"
