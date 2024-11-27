@@ -26,7 +26,7 @@ name = "AdamW"
 lr = 1.8e-3
 
 [training]
-batch_size = 65
+batch_size = 80
 seq_len = 1024
 warmup_fraction = 0.125
 stable_fraction = 0.5
@@ -38,7 +38,7 @@ tensor_parallel_degree = 1  # 8-way TP
 compile = false
 dataset = "fineweb"
 seed = 42
-gradient_accumulation_steps = 5
+gradient_accumulation_steps = 4
 
 [experimental]
 context_parallel_degree = 1
